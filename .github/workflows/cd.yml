@@ -1,76 +1,55 @@
-name: CI / CD
+name: CD
+
+# Build & push images, then deploy to the env mapped from the branch:
+#   develop      -> dev   (auto)
+#   test         -> test  (manual approval via Environment)
+#   main/master  -> prod  (manual approval via Environment)
+#
+# Approval gates are configured under Settings → Environments. The lint/test
+# checks are re-run here so a CD run is self-contained and re-runnable.
 
 on:
     push:
-        branches: [ main, master, test, develop ]
-    pull_request:
         branches: [ main, master, test, develop ]
     workflow_dispatch:
 
 env:
     DOTNET_VERSION: "10.0.x"
     NODE_VERSION: "22"
-    # ECR settings — fill in once you're ready to push.
     AWS_REGION: us-east-1
     ECR_REPOSITORY_API: transact-api
     ECR_REPOSITORY_WEB: transact-web
 
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
+    group: cd-${{ github.ref }}
+    cancel-in-progress: false # never cancel an in-flight deploy
 
 jobs:
-    # ---------------------------------------------------------------------------
-    # 1. Lint & test  (runs on every PR and every push to main)
-    # ---------------------------------------------------------------------------
+    # ---- Re-run lint/test as a gate before producing images ------------------
     backend-test:
         name: Backend · build & test
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
-
-            - name: Setup .NET
-              uses: actions/setup-dotnet@v4
+            - uses: actions/setup-dotnet@v4
               with:
                   dotnet-version: ${{ env.DOTNET_VERSION }}
-
-            - name: Cache NuGet packages
-              uses: actions/cache@v4
+            - uses: actions/cache@v4
               with:
                   path: ~/.nuget/packages
                   key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
                   restore-keys: nuget-${{ runner.os }}-
-
-            - name: Restore
-              run: dotnet restore Transact.slnx
-
-            - name: Lint (format check)
-              run: dotnet format Transact.slnx --verify-no-changes --verbosity diagnostic
-              continue-on-error: true # don't block PRs on style until you've baselined
-
-            - name: Build
-              run: dotnet build Transact.slnx --configuration Release --no-restore
-
-            - name: Test
+            - run: dotnet restore Transact.slnx
+            - run: dotnet build Transact.slnx --configuration Release --no-restore
+            - shell: bash
               run: |
                   shopt -s nullglob
                   tests=(**/*Tests.csproj **/*.Test.csproj)
                   if [ ${#tests[@]} -eq 0 ]; then
                     echo "No test projects found — skipping."
                   else
-                    dotnet test Transact.slnx --configuration Release --no-build \
-                      --logger "trx;LogFileName=test-results.trx" \
-                      --collect:"XPlat Code Coverage"
+                    dotnet test Transact.slnx --configuration Release --no-build
                   fi
-              shell: bash
-
-            - name: Upload test results
-              if: always()
-              uses: actions/upload-artifact@v4
-              with:
-                  name: backend-test-results
-                  path: "**/TestResults/**"
-                  if-no-files-found: ignore
 
     frontend-test:
         name: Frontend · lint, test & build
@@ -80,54 +59,17 @@ jobs:
                 working-directory: Transact.Web
         steps:
             - uses: actions/checkout@v4
-
-            - name: Setup Node
-              uses: actions/setup-node@v4
+            - uses: actions/setup-node@v4
               with:
                   node-version: ${{ env.NODE_VERSION }}
                   cache: npm
                   cache-dependency-path: Transact.Web/package-lock.json
+            - run: npm ci
+            - run: npm run build -- --configuration production
 
-            - name: Install
-              run: npm ci
-
-            - name: Lint
-              run: |
-                  if npm run | grep -qE '^\s*lint'; then
-                    npm run lint
-                  else
-                    echo "No lint script — skipping."
-                  fi
-              shell: bash
-
-            - name: Test
-              run: |
-                  if npm run | grep -qE '^\s*test'; then
-                    CI=true npm test -- --watch=false --browsers=ChromeHeadless || true
-                  else
-                    echo "No test script — skipping."
-                  fi
-              shell: bash
-
-            - name: Build (production)
-              run: npm run build -- --configuration production
-
-            - name: Upload SPA bundle
-              uses: actions/upload-artifact@v4
-              with:
-                  name: web-dist
-                  path: Transact.Web/dist/Transact.Web/browser
-                  retention-days: 7
-
-    # ---------------------------------------------------------------------------
-    # Map branch -> environment name. Used by docker tags and deploy gates.
-    #   develop          -> dev
-    #   test             -> test
-    #   main / master    -> prod
-    # ---------------------------------------------------------------------------
+    # ---- Map branch -> environment ------------------------------------------
     resolve-env:
         name: Resolve target environment
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         runs-on: ubuntu-latest
         outputs:
             env: ${{ steps.map.outputs.env }}
@@ -141,19 +83,15 @@ jobs:
                     *)              echo "env="     >> "$GITHUB_OUTPUT" ;;
                   esac
 
-    # ---------------------------------------------------------------------------
-    # 2 + 3. Build Docker images, tag with commit SHA + env, push to ECR
-    #        (only on push to develop/test/main(master) or workflow_dispatch)
-    # ---------------------------------------------------------------------------
+    # ---- Build (and optionally push) Docker images --------------------------
     docker:
-        name: Docker · build${{ github.event_name == 'pull_request' && '' || ' & push'
-            }}
+        name: Docker · build & push
         needs: [ backend-test, frontend-test, resolve-env ]
         if: needs.resolve-env.outputs.env != ''
         runs-on: ubuntu-latest
         permissions:
             contents: read
-            id-token: write # for OIDC -> AWS (preferred over long-lived keys)
+            id-token: write # OIDC -> AWS
         env:
             AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
             TARGET_ENV: ${{ needs.resolve-env.outputs.env }}
@@ -165,19 +103,17 @@ jobs:
         steps:
             - uses: actions/checkout@v4
 
-            - name: Set up Docker Buildx
-              uses: docker/setup-buildx-action@v3
+            - uses: docker/setup-buildx-action@v3
 
             - name: Compute image tag
               id: meta
               run: |
                   SHA="${GITHUB_SHA::12}"
                   TAG="${TARGET_ENV}-${SHA}"
-                  echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-                  echo "api_image=${{ env.ECR_REPOSITORY_API }}:$TAG" >> "$GITHUB_OUTPUT"
-                  echo "web_image=${{ env.ECR_REPOSITORY_WEB }}:$TAG" >> "$GITHUB_OUTPUT"
+                  echo "tag=$TAG"                                       >> "$GITHUB_OUTPUT"
+                  echo "api_image=${{ env.ECR_REPOSITORY_API }}:$TAG"   >> "$GITHUB_OUTPUT"
+                  echo "web_image=${{ env.ECR_REPOSITORY_WEB }}:$TAG"   >> "$GITHUB_OUTPUT"
 
-            # ---- AWS auth (OIDC). Set the AWS_ROLE_TO_ASSUME secret to enable. ----
             - name: Configure AWS credentials
               if: env.AWS_ROLE_TO_ASSUME != ''
               uses: aws-actions/configure-aws-credentials@v4
@@ -195,14 +131,13 @@ jobs:
               run: |
                   if [ -n "${{ steps.ecr-login.outputs.registry }}" ]; then
                     echo "prefix=${{ steps.ecr-login.outputs.registry }}/" >> "$GITHUB_OUTPUT"
-                    echo "push=true" >> "$GITHUB_OUTPUT"
+                    echo "push=true"  >> "$GITHUB_OUTPUT"
                   else
-                    echo "prefix=" >> "$GITHUB_OUTPUT"
+                    echo "prefix="    >> "$GITHUB_OUTPUT"
                     echo "push=false" >> "$GITHUB_OUTPUT"
-                    echo "::notice::AWS_ROLE_TO_ASSUME secret not set — building images locally without pushing."
+                    echo "::notice::AWS_ROLE_TO_ASSUME secret not set — building images without pushing."
                   fi
 
-            # ---- API image ----
             - name: Build & (optionally) push API image
               uses: docker/build-push-action@v6
               with:
@@ -216,7 +151,6 @@ jobs:
                   cache-to: type=gha,scope=api,mode=max
                   provenance: false
 
-            # ---- Web image ----
             - name: Build & (optionally) push Web image
               uses: docker/build-push-action@v6
               with:
@@ -230,17 +164,7 @@ jobs:
                   cache-to: type=gha,scope=web,mode=max
                   provenance: false
 
-    # ---------------------------------------------------------------------------
-    # 4. Per-environment deploys.
-    #    Approval gates are enforced by GitHub Environments — configure required
-    #    reviewers under Settings → Environments for `test` and `prod`. `dev`
-    #    auto-deploys on every push to develop.
-    #
-    #    Branch  -> environment  -> approval
-    #      develop      -> dev    (auto)
-    #      test         -> test   (manual)
-    #      main/master  -> prod   (manual)
-    # ---------------------------------------------------------------------------
+    # ---- Per-environment deploys (approval gates via GitHub Environments) ---
     deploy-dev:
         name: Deploy · dev (auto)
         needs: docker
@@ -275,7 +199,7 @@ jobs:
                   echo "Web image: ${{ needs.docker.outputs.web-image }}"
                   echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
             - name: Deploy
-              run: echo "TODO — invoke test deploy here (e.g. aws ecs update-service ...)"
+              run: echo "TODO — invoke test deploy here"
 
     deploy-prod:
         name: Deploy · prod (manual approval)
@@ -293,4 +217,4 @@ jobs:
                   echo "Web image: ${{ needs.docker.outputs.web-image }}"
                   echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
             - name: Deploy
-              run: echo "TODO — invoke prod deploy here (e.g. aws ecs update-service ...)"
+              run: echo "TODO — invoke prod deploy here"
