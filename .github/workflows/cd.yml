@@ -9,8 +9,8 @@ name: Deploy
 # Approval gates come from GitHub Environments (Settings -> Environments).
 
 on:
-    # push:
-    #     branches: [ main, master, test, develop ]
+    push:
+        branches: [ main, master, test, develop ]
     workflow_dispatch:
         inputs:
             environment:
