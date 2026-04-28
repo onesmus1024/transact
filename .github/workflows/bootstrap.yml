@@ -184,6 +184,28 @@ jobs:
                     --set log.level=info \
                     --wait --timeout 5m
 
+            - name: Diagnostics — Gateway API Controller
+              if: always()
+              run: |
+                  echo "==== nodes ===="
+                  kubectl get nodes -o wide || true
+                  echo "==== ns ===="
+                  kubectl -n aws-application-networking-system get all || true
+                  echo "==== pods (wide) ===="
+                  kubectl -n aws-application-networking-system get pods -o wide || true
+                  echo "==== describe pods ===="
+                  kubectl -n aws-application-networking-system describe pods || true
+                  echo "==== describe deploy ===="
+                  kubectl -n aws-application-networking-system describe deploy || true
+                  echo "==== events ===="
+                  kubectl -n aws-application-networking-system get events --sort-by=.lastTimestamp || true
+                  echo "==== logs (any container, both prev and current) ===="
+                  for p in $(kubectl -n aws-application-networking-system get pods -o name 2>/dev/null); do
+                    echo "---- $p ----"
+                    kubectl -n aws-application-networking-system logs "$p" --all-containers --tail=200 || true
+                    kubectl -n aws-application-networking-system logs "$p" --all-containers --previous --tail=100 2>/dev/null || true
+                  done
+
             - name: Verify controllers are running
               run: |
                   echo "---- ESO ----"
