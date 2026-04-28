@@ -40,7 +40,6 @@ on:
 
 env:
     AWS_REGION: us-east-1
-    REGION_CODE: use1
     RESOURCE_SUFFIX: "01"
     STACK_PREFIX: transact
 
@@ -112,7 +111,7 @@ jobs:
                     # the suffix slot.
                     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
                     ACCOUNT_SHORT="${ACCOUNT_ID: -6}"
-                    BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${REGION_CODE}-cfn${ACCOUNT_SHORT}-${RESOURCE_SUFFIX}"
+                    BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-cfn${ACCOUNT_SHORT}-${RESOURCE_SUFFIX}"
                   fi
                   echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
                   echo "Resolved templates bucket: $BUCKET"
@@ -164,7 +163,8 @@ jobs:
             - name: Deploy root stack
               uses: aws-actions/aws-cloudformation-github-deploy@v1
               with:
-                  name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{env.REGION_CODE}}-core-${{ env.RESOURCE_SUFFIX }}
+                  name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{ env.AWS_REGION
+                      }}-core-${{ env.RESOURCE_SUFFIX }}
                   template: aws/main.yaml
                   no-fail-on-empty-changeset: "1"
                   capabilities: CAPABILITY_NAMED_IAM
@@ -172,12 +172,12 @@ jobs:
                       [
                         {"Key":"Project","Value":"${{ env.STACK_PREFIX }}"},
                         {"Key":"Environment","Value":"${{ env.TARGET_ENV }}"},
-                        {"Key":"Region","Value":"${{ env.REGION_CODE }}"},
+                        {"Key":"Region","Value":"${{ env.AWS_REGION }}"},
                         {"Key":"ManagedBy","Value":"github-actions"}
                       ]
                   parameter-overrides: >-
                       ProjectName=${{ env.STACK_PREFIX }}, EnvironmentName=${{
-                      env.TARGET_ENV }}, RegionCode=${{ env.REGION_CODE }},
+                      env.TARGET_ENV }}, RegionCode=${{ env.AWS_REGION }},
                       ResourceSuffix=${{ env.RESOURCE_SUFFIX }},
                       TemplatesBucket=${{ steps.bucket.outputs.name }},
                       TemplatesPrefix=${{ env.TEMPLATES_PREFIX }},
@@ -187,6 +187,6 @@ jobs:
             - name: Show stack outputs
               run: |
                   aws cloudformation describe-stacks \
-                    --stack-name "${STACK_PREFIX}-${TARGET_ENV}-${REGION_CODE}-core-${RESOURCE_SUFFIX}" \
+                    --stack-name "${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-core-${RESOURCE_SUFFIX}" \
                     --query 'Stacks[0].Outputs' \
                     --output table

@@ -6,7 +6,7 @@ Description: >
 
   Resource naming convention:
     [Project]-[Environment]-[Region|global]-[Service]-[Suffix]
-  e.g. transact-dev-use1-vpc-01
+  e.g. transact-dev-us-east-1-vpc-01
 
 Parameters:
   ProjectName:
@@ -23,11 +23,11 @@ Parameters:
 
   RegionCode:
     Type: String
-    Default: use1
+    Default: us-east-1
     Description: >
-      Short region code used in resource names (e.g. use1, usw2, euw1).
-      Use "global" for region-agnostic resources.
-    AllowedPattern: '^(global|[a-z]{2,4}\d?)$'
+      Region segment used in resource names. Defaults to the AWS region
+      (e.g. us-east-1). Use "global" for region-agnostic resources.
+    AllowedPattern: '^(global|[a-z]{2}-[a-z]+-\d)$'
 
   ResourceSuffix:
     Type: String
