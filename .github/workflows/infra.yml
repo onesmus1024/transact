@@ -106,8 +106,13 @@ jobs:
                   if [ -n "$BUCKET_OVERRIDE" ]; then
                     BUCKET="$BUCKET_OVERRIDE"
                   else
+                    # Naming convention: [Project]-[Env]-[Region]-[Service]-[Suffix]
+                    # Service segment includes the last 6 digits of the AWS account
+                    # ID to keep the bucket name globally unique without consuming
+                    # the suffix slot.
                     ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-                    BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${REGION_CODE}-cfn-${ACCOUNT_ID}"
+                    ACCOUNT_SHORT="${ACCOUNT_ID: -6}"
+                    BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${REGION_CODE}-cfn${ACCOUNT_SHORT}-${RESOURCE_SUFFIX}"
                   fi
                   echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
                   echo "Resolved templates bucket: $BUCKET"
@@ -159,8 +164,7 @@ jobs:
             - name: Deploy root stack
               uses: aws-actions/aws-cloudformation-github-deploy@v1
               with:
-                  name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{
-                      env.REGION_CODE}}-network-${{ env.RESOURCE_SUFFIX }}
+                  name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{env.REGION_CODE}}-core-${{ env.RESOURCE_SUFFIX }}
                   template: aws/main.yaml
                   no-fail-on-empty-changeset: "1"
                   capabilities: CAPABILITY_NAMED_IAM
@@ -183,6 +187,6 @@ jobs:
             - name: Show stack outputs
               run: |
                   aws cloudformation describe-stacks \
-                    --stack-name "${STACK_PREFIX}-${TARGET_ENV}-${REGION_CODE}-network-${RESOURCE_SUFFIX}" \
+                    --stack-name "${STACK_PREFIX}-${TARGET_ENV}-${REGION_CODE}-core-${RESOURCE_SUFFIX}" \
                     --query 'Stacks[0].Outputs' \
                     --output table
