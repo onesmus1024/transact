@@ -1,0 +1,193 @@
+name: Deploy infrastructure
+
+# Deploys the nested CloudFormation stacks in aws/.
+# Flow:
+#   1. Resolve target environment from branch (or workflow_dispatch input).
+#   2. Sync aws/networking (and other domain folders) to S3 (required for nested TemplateURL).
+#   3. `aws cloudformation deploy` the root stack.
+#
+# Required GitHub secrets:
+#   AWS_ROLE_TO_ASSUME   - IAM role ARN for OIDC.
+# Optional GitHub variables (per environment or repo-wide):
+#   CFN_TEMPLATES_BUCKET - override the auto-generated bucket name.
+#   CFN_TEMPLATES_PREFIX - default "transact/cloudformation".
+
+on:
+  # push:
+    # branches: [ main, master, test, develop ]
+    # paths:
+    #   - "aws/**"
+    #   - ".github/workflows/infra.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [ dev, test, prod ]
+      create_nat_gateway:
+        description: Provision NAT gateway (required for EKS nodes; ~$32/mo)
+        required: false
+        type: choice
+        default: "true"
+        options: [ "true", "false" ]
+      multi_az_nat:
+        description: One NAT per AZ for HA (doubles NAT cost)
+        required: false
+        type: choice
+        default: "true"
+        options: [ "true", "false" ]
+
+env:
+  AWS_REGION: us-east-1
+  RESOURCE_SUFFIX: "01"
+  STACK_PREFIX: transact
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    outputs:
+      target-env: ${{ steps.env.outputs.env }}
+    steps:
+      - id: env
+        run: |
+          if [ -n "${{ inputs.environment }}" ]; then
+            echo "env=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          else
+            case "${GITHUB_REF_NAME}" in
+              develop)     echo "env=dev"  >> "$GITHUB_OUTPUT" ;;
+              test)        echo "env=test" >> "$GITHUB_OUTPUT" ;;
+              main|master) echo "env=prod" >> "$GITHUB_OUTPUT" ;;
+              *) echo "::error::Branch ${GITHUB_REF_NAME} is not mapped to an environment." ; exit 1 ;;
+            esac
+          fi
+
+  deploy:
+    name: Deploy CloudFormation · ${{ needs.resolve.outputs.target-env }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    # GitHub Environment provides approval gates for test/prod.
+    environment:
+      name: ${{ needs.resolve.outputs.target-env }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TARGET_ENV: ${{ needs.resolve.outputs.target-env }}
+      TEMPLATES_PREFIX: ${{ vars.CFN_TEMPLATES_PREFIX || 'transact/cloudformation' }}
+      CREATE_NAT_GATEWAY: ${{ inputs.create_nat_gateway || 'true' }}
+      MULTI_AZ_NAT: ${{ inputs.multi_az_nat || 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required configuration
+        run: |
+          if [ -z "${{ secrets.AWS_ROLE_TO_ASSUME }}" ]; then
+            echo "::error::Secret AWS_ROLE_TO_ASSUME is not set." ; exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve templates bucket
+        id: bucket
+        env:
+          BUCKET_OVERRIDE: ${{ vars.CFN_TEMPLATES_BUCKET }}
+        run: |
+          if [ -n "$BUCKET_OVERRIDE" ]; then
+            BUCKET="$BUCKET_OVERRIDE"
+          else
+            # Naming convention: [Project]-[Env]-[Region]-[Service]-[Suffix]
+            BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-s3-${RESOURCE_SUFFIX}"
+          fi
+          echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "Resolved templates bucket: $BUCKET"
+
+      - name: Ensure templates bucket exists
+        env:
+          BUCKET: ${{ steps.bucket.outputs.name }}
+        run: |
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Bucket $BUCKET already exists."
+          else
+            echo "Creating bucket $BUCKET in $AWS_REGION..."
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
+            else
+              aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION" \
+                --create-bucket-configuration LocationConstraint="$AWS_REGION"
+            fi
+            aws s3api put-bucket-versioning --bucket "$BUCKET" \
+              --versioning-configuration Status=Enabled
+            aws s3api put-public-access-block --bucket "$BUCKET" \
+              --public-access-block-configuration \
+              BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+            aws s3api put-bucket-encryption --bucket "$BUCKET" \
+              --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+            aws s3api put-bucket-tagging --bucket "$BUCKET" --tagging \
+              "TagSet=[{Key=Project,Value=${STACK_PREFIX}},{Key=Environment,Value=${TARGET_ENV}},{Key=ManagedBy,Value=github-actions}]"
+          fi
+
+      - name: Validate templates
+        run: |
+          while IFS= read -r f; do
+            echo "Validating $f"
+            aws cloudformation validate-template --template-body "file://$f" >/dev/null
+          done < <(find aws -type f \( -name '*.yaml' -o -name '*.yml' \))
+
+      - name: Sync nested templates to S3
+        env:
+          TEMPLATES_BUCKET: ${{ steps.bucket.outputs.name }}
+        run: |
+          # Auto-discover every immediate subfolder under aws/ that
+          # contains template files (e.g. networking, registry,
+          # database, ...). New nested stacks just need a folder.
+          shopt -s nullglob
+          for dir in aws/*/; do
+            name=$(basename "$dir")
+            if compgen -G "${dir}*.yaml" > /dev/null || compgen -G "${dir}*.yml" > /dev/null; then
+              echo "Syncing $dir -> s3://${TEMPLATES_BUCKET}/${TEMPLATES_PREFIX}/${name}/"
+              aws s3 sync "$dir" \
+                "s3://${TEMPLATES_BUCKET}/${TEMPLATES_PREFIX}/${name}/" \
+                --delete --only-show-errors \
+                --exclude "*" --include "*.yaml" --include "*.yml"
+            fi
+          done
+
+      - name: Deploy  stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{
+            env.AWS_REGION}}-core-${{ env.RESOURCE_SUFFIX }}
+          template: aws/main.yaml
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM
+          tags: |
+            [
+              {"Key":"Project","Value":"${{ env.STACK_PREFIX }}"},
+              {"Key":"Environment","Value":"${{ env.TARGET_ENV }}"},
+              {"Key":"Region","Value":"${{ env.AWS_REGION }}"},
+              {"Key":"ManagedBy","Value":"github-actions"}
+            ]
+          parameter-overrides: >-
+            ProjectName=${{ env.STACK_PREFIX }}, EnvironmentName=${{
+            env.TARGET_ENV }}, RegionCode=${{ env.AWS_REGION }},
+            ResourceSuffix=${{ env.RESOURCE_SUFFIX }}, TemplatesBucket=${{
+            steps.bucket.outputs.name }}, TemplatesPrefix=${{
+            env.TEMPLATES_PREFIX }}, CreateNatGateway=${{ env.CREATE_NAT_GATEWAY
+            }}, MultiAzNat=${{ env.MULTI_AZ_NAT }}
+
+      - name: Show stack outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-core-${RESOURCE_SUFFIX}" \
+            --query 'Stacks[0].Outputs' \
+            --output table

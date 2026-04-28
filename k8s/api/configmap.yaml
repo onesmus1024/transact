@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: transact-api-config
+  namespace: transact
+data:
+  # Override per-env via kustomize/helm/CI. "Production" is the safe default
+  # for cluster deployments; use "Development" only for ephemeral envs.
+  aspnetcoreEnvironment: Production

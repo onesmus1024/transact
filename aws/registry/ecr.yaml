@@ -1,0 +1,90 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Transact - ECR nested stack. Creates a single private ECR repository that
+  hosts both the API and Web container images. Images are differentiated by
+  tag prefix (e.g. api-<env>-<sha>, web-<env>-<sha>). Image scanning is
+  enabled on push, encryption is AES256, and a lifecycle policy retains the
+  most recent N images per (component, environment) tag prefix.
+  
+
+Parameters:
+  ProjectName:
+    Type: String
+  EnvironmentName:
+    Type: String
+  RegionCode:
+    Type: String
+  ResourceSuffix:
+    Type: String
+  ImageRetentionCount:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: Number of most recent images to keep per component+env tag prefix.
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      RepositoryName: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-${ResourceSuffix}'
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last ${ImageRetentionCount} api-${EnvironmentName}-* images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["api-${EnvironmentName}-"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${ImageRetentionCount}
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep last ${ImageRetentionCount} web-${EnvironmentName}-* images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "tagPrefixList": ["web-${EnvironmentName}-"],
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${ImageRetentionCount}
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 10,
+                "description": "Expire untagged images after 7 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 7
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-${ResourceSuffix}'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  RepositoryName:
+    Value: !Ref Repository
+  RepositoryUri:
+    Value: !GetAtt Repository.RepositoryUri
+  RepositoryArn:
+    Value: !GetAtt Repository.Arn

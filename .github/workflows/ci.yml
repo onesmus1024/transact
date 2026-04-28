@@ -8,6 +8,10 @@ name: Lint & Test
 on:
     pull_request:
         branches: [ main, master, test, develop ]
+    push:
+        branches: [ main, master, test, develop ]
+        paths-ignore:
+            - '**/*.md'
     workflow_dispatch:
 
 env:
@@ -126,7 +130,9 @@ jobs:
               shell: bash
               run: |
                   if npm run | grep -qE '^\s*test'; then
-                    CI=true npm test -- --watch=false --browsers=ChromeHeadless
+                    # Angular 21 uses Vitest (jsdom) — Karma's --browsers
+                    # and --watch flags are not supported.
+                    CI=true npm test
                   else
                     echo "No test script — skipping."
                   fi
