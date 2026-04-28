@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Transact - root stack. Composes nested networking stack(s).
+  Nested templates must be uploaded to S3 first; pass the bucket + prefix as
+  parameters. See aws/networking/*.yaml.
+
+  Resource naming convention:
+    [Project]-[Environment]-[Region|global]-[Service]-[Suffix]
+  e.g. transact-dev-use1-vpc-01
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: transact
+    Description: Short project identifier used to tag/name resources.
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}$'
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [ dev, test, prod ]
+    Description: Target environment.
+
+  RegionCode:
+    Type: String
+    Default: use1
+    Description: >
+      Short region code used in resource names (e.g. use1, usw2, euw1).
+      Use "global" for region-agnostic resources.
+    AllowedPattern: '^(global|[a-z]{2,4}\d?)$'
+
+  ResourceSuffix:
+    Type: String
+    Default: '01'
+    Description: Instance suffix to disambiguate parallel deployments.
+    AllowedPattern: '^[a-z0-9]{1,5}$'
+
+  TemplatesBucket:
+    Type: String
+    Description: >
+      S3 bucket holding the nested templates (e.g. my-cfn-artifacts).
+      Upload the contents of aws/networking/ before deploying.
+
+  TemplatesPrefix:
+    Type: String
+    Default: transact/cloudformation
+    Description: Key prefix in TemplatesBucket where nested templates live (no trailing slash).
+
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.20.1.0/24
+
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.20.2.0/24
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.20.11.0/24
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.20.12.0/24
+
+  CreateNatGateway:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: Whether to provision a NAT gateway for private subnet egress.
+
+Resources:
+  VpcStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/networking/vpc.yaml
+      TimeoutInMinutes: 20
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-vpc-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcCidr: !Ref VpcCidr
+        PublicSubnet1Cidr: !Ref PublicSubnet1Cidr
+        PublicSubnet2Cidr: !Ref PublicSubnet2Cidr
+        PrivateSubnet1Cidr: !Ref PrivateSubnet1Cidr
+        PrivateSubnet2Cidr: !Ref PrivateSubnet2Cidr
+        CreateNatGateway: !Ref CreateNatGateway
+
+Outputs:
+  VpcId:
+    Description: VPC ID from the nested VPC stack.
+    Value: !GetAtt VpcStack.Outputs.VpcId
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-vpc-id-${ResourceSuffix}'
+
+  PublicSubnetIds:
+    Description: Comma-separated public subnet IDs.
+    Value: !GetAtt VpcStack.Outputs.PublicSubnetIds
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-public-subnets-${ResourceSuffix}'
+
+  PrivateSubnetIds:
+    Description: Comma-separated private subnet IDs.
+    Value: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-private-subnets-${ResourceSuffix}'
