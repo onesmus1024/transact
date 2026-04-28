@@ -25,9 +25,8 @@ RUN dotnet publish Transact.Api/Transact.Api.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
-# Run as non-root.
-RUN groupadd --system app && useradd --system --gid app --home /app app \
-    && chown -R app:app /app
+# The aspnet:10.0 base image already ships with a non-root `app` user
+# (UID 1654) — just switch to it. Creating it again fails with exit 9.
 USER app
 
 ENV ASPNETCORE_ENVIRONMENT=Production \
