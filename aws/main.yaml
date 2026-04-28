@@ -85,6 +85,54 @@ Parameters:
     Default: 20
     MinValue: 1
 
+  DbName:
+    Type: String
+    Default: transact
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
+
+  DbMasterUsername:
+    Type: String
+    Default: transact_admin
+    NoEcho: true
+
+  DbInstanceClass:
+    Type: String
+    Default: auto
+    Description: >
+      RDS instance class. 'auto' picks per-env defaults inside the nested
+      stack (dev=db.t4g.micro, test=db.t4g.small, prod=db.m7g.large).
+      Override with any valid RDS instance class.
+
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+
+  DbMaxAllocatedStorage:
+    Type: Number
+    Default: 100
+    MinValue: 20
+
+  DbEngineVersion:
+    Type: String
+    Default: '16.4'
+
+  DbMultiAz:
+    Type: String
+    Default: 'false'
+    AllowedValues: [ 'true', 'false' ]
+
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 0
+    MaxValue: 35
+
+  DbDeletionProtection:
+    Type: String
+    Default: 'false'
+    AllowedValues: [ 'true', 'false' ]
+
 Resources:
   VpcStack:
     Type: AWS::CloudFormation::Stack
@@ -107,6 +155,23 @@ Resources:
         CreateNatGateway: !Ref CreateNatGateway
         MultiAzNat: !Ref MultiAzNat
 
+  SgStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/networking/sg.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-sg-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        VpcCidr: !GetAtt VpcStack.Outputs.VpcCidr
+
   EcrStack:
     Type: AWS::CloudFormation::Stack
     Properties:
@@ -121,6 +186,33 @@ Resources:
         RegionCode: !Ref RegionCode
         ResourceSuffix: !Ref ResourceSuffix
         ImageRetentionCount: !Ref EcrImageRetentionCount
+
+  RdsPostgresStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/database/rds-postgres.yaml
+      TimeoutInMinutes: 45
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        DbSecurityGroupId: !GetAtt SgStack.Outputs.DbSecurityGroupId
+        PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+        DbName: !Ref DbName
+        DbMasterUsername: !Ref DbMasterUsername
+        DbInstanceClass: !Ref DbInstanceClass
+        DbAllocatedStorage: !Ref DbAllocatedStorage
+        DbMaxAllocatedStorage: !Ref DbMaxAllocatedStorage
+        EngineVersion: !Ref DbEngineVersion
+        MultiAz: !Ref DbMultiAz
+        BackupRetentionDays: !Ref DbBackupRetentionDays
+        DeletionProtection: !Ref DbDeletionProtection
 
 Outputs:
   VpcId:
@@ -150,3 +242,31 @@ Outputs:
   WebRepositoryUri:
     Description: Same as ApiRepositoryUri (single shared repo).
     Value: !GetAtt EcrStack.Outputs.RepositoryUri
+
+  DbEndpointAddress:
+    Description: PostgreSQL endpoint hostname.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbEndpointAddress
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-endpoint-${ResourceSuffix}'
+
+  DbEndpointPort:
+    Description: PostgreSQL endpoint port.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbEndpointPort
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-port-${ResourceSuffix}'
+
+  DbName:
+    Description: Initial database name.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbName
+
+  DbSecurityGroupId:
+    Description: Security group attached to the RDS instance.
+    Value: !GetAtt SgStack.Outputs.DbSecurityGroupId
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-sg-${ResourceSuffix}'
+
+  DbMasterSecretArn:
+    Description: ARN of the Secrets Manager secret with master credentials.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbMasterSecretArn
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-arn-${ResourceSuffix}'
