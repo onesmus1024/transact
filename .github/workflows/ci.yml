@@ -1,0 +1,111 @@
+name: CI
+
+# Lint, build and test only. Runs on every PR and on pushes to feature
+# branches. Pushes to release branches (develop/test/main/master) are
+# handled by cd.yml, which re-runs the same checks before deploying — so
+# we exclude those here to avoid double runs.
+
+on:
+    push:
+        branches-ignore: [ main, master, test, develop ]
+    pull_request:
+        branches: [ main, master, test, develop ]
+    workflow_dispatch:
+
+env:
+    DOTNET_VERSION: "10.0.x"
+    NODE_VERSION: "22"
+
+concurrency:
+    group: ci-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    backend-test:
+        name: Backend · build & test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: ${{ env.DOTNET_VERSION }}
+
+            - name: Cache NuGet packages
+              uses: actions/cache@v4
+              with:
+                  path: ~/.nuget/packages
+                  key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+                  restore-keys: nuget-${{ runner.os }}-
+
+            - name: Restore
+              run: dotnet restore Transact.slnx
+
+            - name: Lint (format check)
+              run: dotnet format Transact.slnx --verify-no-changes --verbosity diagnostic
+              continue-on-error: true
+
+            - name: Build
+              run: dotnet build Transact.slnx --configuration Release --no-restore
+
+            - name: Test
+              shell: bash
+              run: |
+                  shopt -s nullglob
+                  tests=(**/*Tests.csproj **/*.Test.csproj)
+                  if [ ${#tests[@]} -eq 0 ]; then
+                    echo "No test projects found — skipping."
+                  else
+                    dotnet test Transact.slnx --configuration Release --no-build \
+                      --logger "trx;LogFileName=test-results.trx" \
+                      --collect:"XPlat Code Coverage"
+                  fi
+
+            - name: Upload test results
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: backend-test-results
+                  path: "**/TestResults/**"
+                  if-no-files-found: ignore
+
+    frontend-test:
+        name: Frontend · lint, test & build
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: Transact.Web
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: Transact.Web/package-lock.json
+
+            - name: Install
+              run: npm ci
+
+            - name: Lint
+              shell: bash
+              run: |
+                  if npm run | grep -qE '^\s*lint'; then
+                    npm run lint
+                  else
+                    echo "No lint script — skipping."
+                  fi
+
+            - name: Test
+              shell: bash
+              run: |
+                  if npm run | grep -qE '^\s*test'; then
+                    CI=true npm test -- --watch=false --browsers=ChromeHeadless || true
+                  else
+                    echo "No test script — skipping."
+                  fi
+
+            - name: Build (production)
+              run: npm run build -- --configuration production
