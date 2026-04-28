@@ -106,12 +106,7 @@ jobs:
                     BUCKET="$BUCKET_OVERRIDE"
                   else
                     # Naming convention: [Project]-[Env]-[Region]-[Service]-[Suffix]
-                    # Service segment includes the last 6 digits of the AWS account
-                    # ID to keep the bucket name globally unique without consuming
-                    # the suffix slot.
-                    ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-                    ACCOUNT_SHORT="${ACCOUNT_ID: -6}"
-                    BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-cfn${ACCOUNT_SHORT}-${RESOURCE_SUFFIX}"
+                    BUCKET="${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-s3-${RESOURCE_SUFFIX}"
                   fi
                   echo "name=$BUCKET" >> "$GITHUB_OUTPUT"
                   echo "Resolved templates bucket: $BUCKET"
@@ -160,11 +155,10 @@ jobs:
                       --delete --only-show-errors
                   done
 
-            - name: Deploy root stack
+            - name: Deploy  stack
               uses: aws-actions/aws-cloudformation-github-deploy@v1
               with:
-                  name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{ env.AWS_REGION
-                      }}-core-${{ env.RESOURCE_SUFFIX }}
+                  name: ${{ env.STACK_PREFIX }}-${{ env.TARGET_ENV }}-${{ env.AWS_REGION}}-core-${{ env.RESOURCE_SUFFIX }}
                   template: aws/main.yaml
                   no-fail-on-empty-changeset: "1"
                   capabilities: CAPABILITY_NAMED_IAM
