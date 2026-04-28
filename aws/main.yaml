@@ -34,6 +34,7 @@ Parameters:
     Default: '01'
     Description: Instance suffix to disambiguate parallel deployments.
     AllowedPattern: '^[a-z0-9]{1,5}$'
+    
 
   TemplatesBucket:
     Type: String
