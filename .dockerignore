@@ -1,0 +1,15 @@
+**/bin
+**/obj
+**/.vs
+**/.vscode
+**/node_modules
+**/dist
+**/.angular
+**/.git
+**/*.user
+Transact.Web
+README.md
+docker-compose.yml
+.env
+.env.*
+nginx

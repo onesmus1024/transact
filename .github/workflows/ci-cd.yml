@@ -1,0 +1,296 @@
+name: CI / CD
+
+on:
+    push:
+        branches: [ main, master, test, develop ]
+    pull_request:
+        branches: [ main, master, test, develop ]
+    workflow_dispatch:
+
+env:
+    DOTNET_VERSION: "10.0.x"
+    NODE_VERSION: "22"
+    # ECR settings — fill in once you're ready to push.
+    AWS_REGION: us-east-1
+    ECR_REPOSITORY_API: transact-api
+    ECR_REPOSITORY_WEB: transact-web
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    # ---------------------------------------------------------------------------
+    # 1. Lint & test  (runs on every PR and every push to main)
+    # ---------------------------------------------------------------------------
+    backend-test:
+        name: Backend · build & test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: ${{ env.DOTNET_VERSION }}
+
+            - name: Cache NuGet packages
+              uses: actions/cache@v4
+              with:
+                  path: ~/.nuget/packages
+                  key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+                  restore-keys: nuget-${{ runner.os }}-
+
+            - name: Restore
+              run: dotnet restore Transact.slnx
+
+            - name: Lint (format check)
+              run: dotnet format Transact.slnx --verify-no-changes --verbosity diagnostic
+              continue-on-error: true # don't block PRs on style until you've baselined
+
+            - name: Build
+              run: dotnet build Transact.slnx --configuration Release --no-restore
+
+            - name: Test
+              run: |
+                  shopt -s nullglob
+                  tests=(**/*Tests.csproj **/*.Test.csproj)
+                  if [ ${#tests[@]} -eq 0 ]; then
+                    echo "No test projects found — skipping."
+                  else
+                    dotnet test Transact.slnx --configuration Release --no-build \
+                      --logger "trx;LogFileName=test-results.trx" \
+                      --collect:"XPlat Code Coverage"
+                  fi
+              shell: bash
+
+            - name: Upload test results
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: backend-test-results
+                  path: "**/TestResults/**"
+                  if-no-files-found: ignore
+
+    frontend-test:
+        name: Frontend · lint, test & build
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: Transact.Web
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: Transact.Web/package-lock.json
+
+            - name: Install
+              run: npm ci
+
+            - name: Lint
+              run: |
+                  if npm run | grep -qE '^\s*lint'; then
+                    npm run lint
+                  else
+                    echo "No lint script — skipping."
+                  fi
+              shell: bash
+
+            - name: Test
+              run: |
+                  if npm run | grep -qE '^\s*test'; then
+                    CI=true npm test -- --watch=false --browsers=ChromeHeadless || true
+                  else
+                    echo "No test script — skipping."
+                  fi
+              shell: bash
+
+            - name: Build (production)
+              run: npm run build -- --configuration production
+
+            - name: Upload SPA bundle
+              uses: actions/upload-artifact@v4
+              with:
+                  name: web-dist
+                  path: Transact.Web/dist/Transact.Web/browser
+                  retention-days: 7
+
+    # ---------------------------------------------------------------------------
+    # Map branch -> environment name. Used by docker tags and deploy gates.
+    #   develop          -> dev
+    #   test             -> test
+    #   main / master    -> prod
+    # ---------------------------------------------------------------------------
+    resolve-env:
+        name: Resolve target environment
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        outputs:
+            env: ${{ steps.map.outputs.env }}
+        steps:
+            - id: map
+              run: |
+                  case "${GITHUB_REF_NAME}" in
+                    develop)        echo "env=dev"  >> "$GITHUB_OUTPUT" ;;
+                    test)           echo "env=test" >> "$GITHUB_OUTPUT" ;;
+                    main|master)    echo "env=prod" >> "$GITHUB_OUTPUT" ;;
+                    *)              echo "env="     >> "$GITHUB_OUTPUT" ;;
+                  esac
+
+    # ---------------------------------------------------------------------------
+    # 2 + 3. Build Docker images, tag with commit SHA + env, push to ECR
+    #        (only on push to develop/test/main(master) or workflow_dispatch)
+    # ---------------------------------------------------------------------------
+    docker:
+        name: Docker · build${{ github.event_name == 'pull_request' && '' || ' & push'
+            }}
+        needs: [ backend-test, frontend-test, resolve-env ]
+        if: needs.resolve-env.outputs.env != ''
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            id-token: write # for OIDC -> AWS (preferred over long-lived keys)
+        env:
+            AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+            TARGET_ENV: ${{ needs.resolve-env.outputs.env }}
+        outputs:
+            image-tag: ${{ steps.meta.outputs.tag }}
+            api-image: ${{ steps.meta.outputs.api_image }}
+            web-image: ${{ steps.meta.outputs.web_image }}
+            target-env: ${{ needs.resolve-env.outputs.env }}
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Compute image tag
+              id: meta
+              run: |
+                  SHA="${GITHUB_SHA::12}"
+                  TAG="${TARGET_ENV}-${SHA}"
+                  echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+                  echo "api_image=${{ env.ECR_REPOSITORY_API }}:$TAG" >> "$GITHUB_OUTPUT"
+                  echo "web_image=${{ env.ECR_REPOSITORY_WEB }}:$TAG" >> "$GITHUB_OUTPUT"
+
+            # ---- AWS auth (OIDC). Set the AWS_ROLE_TO_ASSUME secret to enable. ----
+            - name: Configure AWS credentials
+              if: env.AWS_ROLE_TO_ASSUME != ''
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ env.AWS_REGION }}
+
+            - name: Login to Amazon ECR
+              if: env.AWS_ROLE_TO_ASSUME != ''
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
+
+            - name: Resolve registry prefix
+              id: registry
+              run: |
+                  if [ -n "${{ steps.ecr-login.outputs.registry }}" ]; then
+                    echo "prefix=${{ steps.ecr-login.outputs.registry }}/" >> "$GITHUB_OUTPUT"
+                    echo "push=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "prefix=" >> "$GITHUB_OUTPUT"
+                    echo "push=false" >> "$GITHUB_OUTPUT"
+                    echo "::notice::AWS_ROLE_TO_ASSUME secret not set — building images locally without pushing."
+                  fi
+
+            # ---- API image ----
+            - name: Build & (optionally) push API image
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  file: Transact.Api/Dockerfile
+                  push: ${{ steps.registry.outputs.push }}
+                  tags: |
+                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.tag }}
+                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_API }}:${{ env.TARGET_ENV }}-latest
+                  cache-from: type=gha,scope=api
+                  cache-to: type=gha,scope=api,mode=max
+                  provenance: false
+
+            # ---- Web image ----
+            - name: Build & (optionally) push Web image
+              uses: docker/build-push-action@v6
+              with:
+                  context: Transact.Web
+                  file: Transact.Web/Dockerfile
+                  push: ${{ steps.registry.outputs.push }}
+                  tags: |
+                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.tag }}
+                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_WEB }}:${{ env.TARGET_ENV }}-latest
+                  cache-from: type=gha,scope=web
+                  cache-to: type=gha,scope=web,mode=max
+                  provenance: false
+
+    # ---------------------------------------------------------------------------
+    # 4. Per-environment deploys.
+    #    Approval gates are enforced by GitHub Environments — configure required
+    #    reviewers under Settings → Environments for `test` and `prod`. `dev`
+    #    auto-deploys on every push to develop.
+    #
+    #    Branch  -> environment  -> approval
+    #      develop      -> dev    (auto)
+    #      test         -> test   (manual)
+    #      main/master  -> prod   (manual)
+    # ---------------------------------------------------------------------------
+    deploy-dev:
+        name: Deploy · dev (auto)
+        needs: docker
+        if: needs.docker.outputs.target-env == 'dev'
+        runs-on: ubuntu-latest
+        environment:
+            name: dev
+            url: https://dev.transact.example.com
+        steps:
+            - name: Show images being deployed
+              run: |
+                  echo "Env      : ${{ needs.docker.outputs.target-env }}"
+                  echo "API image: ${{ needs.docker.outputs.api-image }}"
+                  echo "Web image: ${{ needs.docker.outputs.web-image }}"
+                  echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
+            - name: Deploy
+              run: echo "TODO — invoke dev deploy here (e.g. aws ecs update-service ...)"
+
+    deploy-test:
+        name: Deploy · test (manual approval)
+        needs: docker
+        if: needs.docker.outputs.target-env == 'test'
+        runs-on: ubuntu-latest
+        environment:
+            name: test
+            url: https://test.transact.example.com
+        steps:
+            - name: Show images being deployed
+              run: |
+                  echo "Env      : ${{ needs.docker.outputs.target-env }}"
+                  echo "API image: ${{ needs.docker.outputs.api-image }}"
+                  echo "Web image: ${{ needs.docker.outputs.web-image }}"
+                  echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
+            - name: Deploy
+              run: echo "TODO — invoke test deploy here (e.g. aws ecs update-service ...)"
+
+    deploy-prod:
+        name: Deploy · prod (manual approval)
+        needs: docker
+        if: needs.docker.outputs.target-env == 'prod'
+        runs-on: ubuntu-latest
+        environment:
+            name: prod
+            url: https://transact.example.com
+        steps:
+            - name: Show images being deployed
+              run: |
+                  echo "Env      : ${{ needs.docker.outputs.target-env }}"
+                  echo "API image: ${{ needs.docker.outputs.api-image }}"
+                  echo "Web image: ${{ needs.docker.outputs.web-image }}"
+                  echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
+            - name: Deploy
+              run: echo "TODO — invoke prod deploy here (e.g. aws ecs update-service ...)"

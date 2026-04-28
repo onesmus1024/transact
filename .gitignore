@@ -1,0 +1,17 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Build output
+bin/
+obj/
+node_modules/
+dist/
+.angular/
+
+# Editors
+.vs/
+.vscode/
+.idea/
+*.user

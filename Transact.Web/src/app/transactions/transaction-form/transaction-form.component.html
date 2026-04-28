@@ -1,0 +1,86 @@
+<section class="mx-auto max-w-2xl space-y-6">
+    <header class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-semibold text-slate-900">
+                {{ editingId() ? 'Edit transaction' : 'New transaction' }}
+            </h1>
+            <p class="text-sm text-slate-500">
+                {{ editingId() ? 'Update the values below.' : 'Fill in the details to create a transaction.' }}
+            </p>
+        </div>
+        <a routerLink="/transactions" class="text-sm font-medium text-slate-600 hover:text-slate-900">
+            ← Back
+        </a>
+    </header>
+
+    @if (error(); as err) {
+    <div class="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        {{ err }}
+    </div>
+    }
+
+    @if (loading()) {
+    <div class="text-sm text-slate-500">Loading…</div>
+    } @else {
+    <form (ngSubmit)="submit()" class="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label class="block">
+                <span class="mb-1 block text-sm font-medium text-slate-700">Amount</span>
+                <input type="number" name="amount" step="0.01" min="0" [(ngModel)]="amount" required
+                    class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </label>
+
+            <label class="block">
+                <span class="mb-1 block text-sm font-medium text-slate-700">Currency</span>
+                <input type="text" name="currency" maxlength="8" [(ngModel)]="currency"
+                    class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm uppercase shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </label>
+
+            <label class="block">
+                <span class="mb-1 block text-sm font-medium text-slate-700">Type</span>
+                <select name="type" [(ngModel)]="type"
+                    class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                    @for (t of types; track t) {
+                    <option [value]="t">{{ t }}</option>
+                    }
+                </select>
+            </label>
+
+            @if (editingId()) {
+            <label class="block">
+                <span class="mb-1 block text-sm font-medium text-slate-700">Status</span>
+                <select name="status" [(ngModel)]="status"
+                    class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                    @for (s of statuses; track s) {
+                    <option [value]="s">{{ s }}</option>
+                    }
+                </select>
+            </label>
+            }
+
+            <label class="block sm:col-span-2">
+                <span class="mb-1 block text-sm font-medium text-slate-700">Sender ID</span>
+                <input type="text" name="senderId" [(ngModel)]="senderId" required
+                    class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </label>
+
+            <label class="block sm:col-span-2">
+                <span class="mb-1 block text-sm font-medium text-slate-700">Receiver ID</span>
+                <input type="text" name="receiverId" [(ngModel)]="receiverId" required
+                    class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+            </label>
+        </div>
+
+        <div class="flex items-center justify-end gap-3 pt-2">
+            <a routerLink="/transactions"
+                class="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                Cancel
+            </a>
+            <button type="submit" [disabled]="saving()"
+                class="rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50">
+                {{ saving() ? 'Saving…' : editingId() ? 'Save changes' : 'Create' }}
+            </button>
+        </div>
+    </form>
+    }
+</section>

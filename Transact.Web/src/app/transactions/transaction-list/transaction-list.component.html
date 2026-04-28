@@ -1,0 +1,90 @@
+<section class="space-y-4">
+    <header class="flex items-center justify-between">
+        <div>
+            <h1 class="text-2xl font-semibold text-slate-900">Transactions</h1>
+            <p class="text-sm text-slate-500">View, create, edit and delete transactions.</p>
+        </div>
+        <div class="flex gap-2">
+            <button type="button" (click)="refresh()"
+                class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                Refresh
+            </button>
+            <a routerLink="/transactions/new"
+                class="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+                + New transaction
+            </a>
+        </div>
+    </header>
+
+    @if (error(); as err) {
+    <div class="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        {{ err }}
+    </div>
+    }
+
+    <div class="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <table class="min-w-full divide-y divide-slate-200 text-sm">
+            <thead class="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <tr>
+                    <th class="px-4 py-3">Created</th>
+                    <th class="px-4 py-3">Type</th>
+                    <th class="px-4 py-3">Amount</th>
+                    <th class="px-4 py-3">Sender</th>
+                    <th class="px-4 py-3">Receiver</th>
+                    <th class="px-4 py-3">Status</th>
+                    <th class="px-4 py-3 text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+                @if (loading()) {
+                <tr>
+                    <td colspan="7" class="px-4 py-6 text-center text-slate-500">Loading…</td>
+                </tr>
+                } @else if (transactions().length === 0) {
+                <tr>
+                    <td colspan="7" class="px-4 py-6 text-center text-slate-500">
+                        No transactions yet.
+                    </td>
+                </tr>
+                } @else {
+                @for (t of transactions(); track t.id) {
+                <tr class="hover:bg-slate-50">
+                    <td class="px-4 py-3 text-slate-700">{{ t.createdAt | date: 'short' }}</td>
+                    <td class="px-4 py-3">
+                        <span class="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                            {{ t.type }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3 font-medium text-slate-900">
+                        {{ t.amount | number: '1.2-2' }} {{ t.currency }}
+                    </td>
+                    <td class="px-4 py-3 text-slate-700">{{ t.senderId }}</td>
+                    <td class="px-4 py-3 text-slate-700">{{ t.receiverId }}</td>
+                    <td class="px-4 py-3">
+                        <span class="rounded-full px-2 py-0.5 text-xs font-medium"
+                            [class.bg-amber-50]="t.status === 'Pending'" [class.text-amber-700]="t.status === 'Pending'"
+                            [class.bg-emerald-50]="t.status === 'Completed'"
+                            [class.text-emerald-700]="t.status === 'Completed'"
+                            [class.bg-red-50]="t.status === 'Failed'" [class.text-red-700]="t.status === 'Failed'"
+                            [class.bg-slate-100]="t.status === 'Reversed'"
+                            [class.text-slate-700]="t.status === 'Reversed'">
+                            {{ t.status }}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3 text-right">
+                        <a [routerLink]="['/transactions', t.id, 'edit']"
+                            class="mr-2 text-sm font-medium text-indigo-600 hover:text-indigo-500">
+                            Edit
+                        </a>
+                        <button type="button" (click)="remove(t.id)" [disabled]="deletingId() === t.id"
+                            class="text-sm font-medium text-red-600 hover:text-red-500 disabled:opacity-50">
+                            {{ deletingId() === t.id ? 'Deleting…' : 'Delete' }}
+                        </button>
+                    </td>
+                </tr>
+                }
+                }
+            </tbody>
+        </table>
+    </div>
+</section>
