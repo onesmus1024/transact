@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Transact - root stack. Composes nested networking stack(s).
+  Transact - root stack. Composes nested networking and registry stack(s).
   Nested templates must be uploaded to S3 first; pass the bucket + prefix as
-  parameters. See aws/networking/*.yaml.
+  parameters. See aws/networking/*.yaml and aws/registry/*.yaml.
 
   Resource naming convention:
     [Project]-[Environment]-[Region|global]-[Service]-[Suffix]
@@ -34,7 +34,7 @@ Parameters:
     Default: '01'
     Description: Instance suffix to disambiguate parallel deployments.
     AllowedPattern: '^[a-z0-9]{1,5}$'
-    
+
 
   TemplatesBucket:
     Type: String
@@ -74,6 +74,19 @@ Parameters:
     AllowedValues: [ 'true', 'false' ]
     Description: Whether to provision a NAT gateway for private subnet egress.
 
+  ApiRepositoryName:
+    Type: String
+    Default: transact-api
+
+  WebRepositoryName:
+    Type: String
+    Default: transact-web
+
+  EcrImageRetentionCount:
+    Type: Number
+    Default: 20
+    MinValue: 1
+
 Resources:
   VpcStack:
     Type: AWS::CloudFormation::Stack
@@ -95,6 +108,23 @@ Resources:
         PrivateSubnet2Cidr: !Ref PrivateSubnet2Cidr
         CreateNatGateway: !Ref CreateNatGateway
 
+  EcrStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/registry/ecr.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        ApiRepositoryName: !Ref ApiRepositoryName
+        WebRepositoryName: !Ref WebRepositoryName
+        ImageRetentionCount: !Ref EcrImageRetentionCount
+
 Outputs:
   VpcId:
     Description: VPC ID from the nested VPC stack.
@@ -113,3 +143,15 @@ Outputs:
     Value: !GetAtt VpcStack.Outputs.PrivateSubnetIds
     Export:
       Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-private-subnets-${ResourceSuffix}'
+
+  ApiRepositoryUri:
+    Description: API ECR repository URI.
+    Value: !GetAtt EcrStack.Outputs.ApiRepositoryUri
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-api-uri-${ResourceSuffix}'
+
+  WebRepositoryUri:
+    Description: Web ECR repository URI.
+    Value: !GetAtt EcrStack.Outputs.WebRepositoryUri
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-web-uri-${ResourceSuffix}'
