@@ -232,7 +232,7 @@ jobs:
                   echo "---- Gateway API Controller ----"
                   kubectl -n aws-application-networking-system get pods
                   kubectl -n aws-application-networking-system rollout status \
-                    deployment/gateway-api-controller --timeout=3m
+                    deployment/gateway-api-controller-aws-gateway-controller-chart --timeout=3m
 
                   echo "---- GatewayClass ----"
                   kubectl get gatewayclass amazon-vpc-lattice -o wide || true
