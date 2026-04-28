@@ -164,16 +164,21 @@ jobs:
               run: |
                   set -euo pipefail
                   # The controller needs the upstream Gateway API CRDs installed
-                  # in-cluster. Apply the standard channel from the official repo
-                  # (idempotent — `kubectl apply` upserts).
-                  kubectl apply -f \
+                  # in-cluster. Use server-side apply so the field manager is
+                  # consistent with Helm (which also uses SSA). --force-conflicts
+                  # lets us take ownership of fields previously managed by an
+                  # earlier client-side `kubectl apply` if any exist.
+                  kubectl apply --server-side --force-conflicts -f \
                     https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
 
                   # Helm chart is published to a public ECR; no `helm repo add` needed.
+                  # --skip-crds: chart bundles older Gateway API CRDs (v0.6.1) that
+                  # would conflict with the v1.1.0 set we just applied.
                   helm upgrade --install gateway-api-controller \
                     oci://public.ecr.aws/aws-application-networking-k8s/aws-gateway-controller-chart \
                     --version "$GWAPI_VERSION" \
                     --namespace aws-application-networking-system --create-namespace \
+                    --skip-crds \
                     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$GWAPI_ROLE" \
                     --set defaultServiceNetwork="$LATTICE_NET" \
                     --set log.level=info \
