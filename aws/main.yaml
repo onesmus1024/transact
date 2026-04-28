@@ -76,11 +76,8 @@ Parameters:
 
   ApiRepositoryName:
     Type: String
-    Default: transact-api
-
-  WebRepositoryName:
-    Type: String
-    Default: transact-web
+    Default: transact
+    Description: Single ECR repository name (hosts both api-* and web-* tags).
 
   EcrImageRetentionCount:
     Type: Number
@@ -121,8 +118,7 @@ Resources:
         EnvironmentName: !Ref EnvironmentName
         RegionCode: !Ref RegionCode
         ResourceSuffix: !Ref ResourceSuffix
-        ApiRepositoryName: !Ref ApiRepositoryName
-        WebRepositoryName: !Ref WebRepositoryName
+        RepositoryName: !Ref ApiRepositoryName
         ImageRetentionCount: !Ref EcrImageRetentionCount
 
 Outputs:
@@ -145,13 +141,11 @@ Outputs:
       Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-private-subnets-${ResourceSuffix}'
 
   ApiRepositoryUri:
-    Description: API ECR repository URI.
-    Value: !GetAtt EcrStack.Outputs.ApiRepositoryUri
+    Description: ECR repository URI (single repo for api-* and web-* tags).
+    Value: !GetAtt EcrStack.Outputs.RepositoryUri
     Export:
-      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-api-uri-${ResourceSuffix}'
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-uri-${ResourceSuffix}'
 
   WebRepositoryUri:
-    Description: Web ECR repository URI.
-    Value: !GetAtt EcrStack.Outputs.WebRepositoryUri
-    Export:
-      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-web-uri-${ResourceSuffix}'
+    Description: Same as ApiRepositoryUri (single shared repo).
+    Value: !GetAtt EcrStack.Outputs.RepositoryUri
