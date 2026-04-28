@@ -1,8 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Transact - VPC nested stack. Creates a VPC with two public + two private
-  subnets across two AZs, an Internet Gateway, and (optionally) a single
-  NAT Gateway shared by both private subnets.
+  subnets across two AZs and an Internet Gateway. NAT egress is configurable:
+    - CreateNatGateway=false  -> no NAT (private subnets have no egress)
+    - CreateNatGateway=true,  MultiAzNat=false -> single NAT in AZ-a (cheaper)
+    - CreateNatGateway=true,  MultiAzNat=true  -> one NAT per AZ (HA)
 
 Parameters:
   ProjectName:
@@ -11,10 +13,8 @@ Parameters:
     Type: String
   RegionCode:
     Type: String
-    Default: use1
   ResourceSuffix:
     Type: String
-    Default: '01'
   VpcCidr:
     Type: String
   PublicSubnet1Cidr:
@@ -29,9 +29,20 @@ Parameters:
     Type: String
     AllowedValues: [ 'true', 'false' ]
     Default: 'true'
+  MultiAzNat:
+    Type: String
+    AllowedValues: [ 'true', 'false' ]
+    Default: 'true'
+    Description: >
+      When 'true' (and CreateNatGateway is 'true'), provision one NAT gateway
+      per AZ so loss of an AZ does not break egress for the other private
+      subnet. Costs ~$32/mo per extra NAT.
 
 Conditions:
   WithNat: !Equals [ !Ref CreateNatGateway, 'true' ]
+  WithMultiAzNat: !And
+    - !Equals [ !Ref CreateNatGateway, 'true' ]
+    - !Equals [ !Ref MultiAzNat, 'true' ]
 
 Resources:
   Vpc:
@@ -141,7 +152,7 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnet2
 
-  NatEip:
+  NatEip1:
     Type: AWS::EC2::EIP
     Condition: WithNat
     DependsOn: AttachInternetGateway
@@ -149,44 +160,81 @@ Resources:
       Domain: vpc
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eip-nat-${ResourceSuffix}'
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eip-nat1-${ResourceSuffix}'
 
-  NatGateway:
+  NatGateway1:
     Type: AWS::EC2::NatGateway
     Condition: WithNat
     Properties:
-      AllocationId: !GetAtt NatEip.AllocationId
+      AllocationId: !GetAtt NatEip1.AllocationId
       SubnetId: !Ref PublicSubnet1
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-nat-${ResourceSuffix}'
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-nat1-${ResourceSuffix}'
 
-  PrivateRouteTable:
+  NatEip2:
+    Type: AWS::EC2::EIP
+    Condition: WithMultiAzNat
+    DependsOn: AttachInternetGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eip-nat2-${ResourceSuffix}'
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Condition: WithMultiAzNat
+    Properties:
+      AllocationId: !GetAtt NatEip2.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-nat2-${ResourceSuffix}'
+
+  PrivateRouteTable1:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref Vpc
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rtb-prv-${ResourceSuffix}'
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rtb-prv1-${ResourceSuffix}'
 
-  PrivateDefaultRoute:
+  PrivateDefaultRoute1:
     Type: AWS::EC2::Route
     Condition: WithNat
     Properties:
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTable1
       DestinationCidrBlock: 0.0.0.0/0
-      NatGatewayId: !Ref NatGateway
+      NatGatewayId: !Ref NatGateway1
 
   PrivateSubnet1RouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTable1
       SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rtb-prv2-${ResourceSuffix}'
+
+  # When MultiAzNat=true, route via NatGateway2 (in AZ-b). Otherwise share NAT1.
+  PrivateDefaultRoute2:
+    Type: AWS::EC2::Route
+    Condition: WithNat
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [ WithMultiAzNat, !Ref NatGateway2, !Ref NatGateway1 ]
 
   PrivateSubnet2RouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      RouteTableId: !Ref PrivateRouteTable
+      RouteTableId: !Ref PrivateRouteTable2
       SubnetId: !Ref PrivateSubnet2
 
 Outputs:
@@ -200,5 +248,7 @@ Outputs:
     Value: !Join [ ',', [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ] ]
   PublicRouteTableId:
     Value: !Ref PublicRouteTable
-  PrivateRouteTableId:
-    Value: !Ref PrivateRouteTable
+  PrivateRouteTableIds:
+    Value: !Join [ ',', [ !Ref PrivateRouteTable1, !Ref PrivateRouteTable2 ] ]
+  AvailabilityZones:
+    Value: !Join [ ',', [ !GetAtt PrivateSubnet1.AvailabilityZone, !GetAtt PrivateSubnet2.AvailabilityZone ] ]

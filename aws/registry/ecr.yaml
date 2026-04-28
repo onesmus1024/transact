@@ -13,10 +13,8 @@ Parameters:
     Type: String
   RegionCode:
     Type: String
-    Default: use1
   ResourceSuffix:
     Type: String
-    Default: '01'
   RepositoryName:
     Type: String
     Default: transact

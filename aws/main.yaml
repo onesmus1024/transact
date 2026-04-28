@@ -74,6 +74,12 @@ Parameters:
     AllowedValues: [ 'true', 'false' ]
     Description: Whether to provision a NAT gateway for private subnet egress.
 
+  MultiAzNat:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: When true, provision one NAT gateway per AZ for HA.
+
   ApiRepositoryName:
     Type: String
     Default: transact
@@ -104,6 +110,7 @@ Resources:
         PrivateSubnet1Cidr: !Ref PrivateSubnet1Cidr
         PrivateSubnet2Cidr: !Ref PrivateSubnet2Cidr
         CreateNatGateway: !Ref CreateNatGateway
+        MultiAzNat: !Ref MultiAzNat
 
   EcrStack:
     Type: AWS::CloudFormation::Stack

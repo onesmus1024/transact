@@ -31,6 +31,12 @@ on:
                 type: choice
                 default: "false"
                 options: [ "true", "false" ]
+            multi_az_nat:
+                description: One NAT per AZ for HA (doubles NAT cost)
+                required: false
+                type: choice
+                default: "true"
+                options: [ "true", "false" ]
 
 env:
     AWS_REGION: us-east-1
@@ -76,6 +82,7 @@ jobs:
             TARGET_ENV: ${{ needs.resolve.outputs.target-env }}
             TEMPLATES_PREFIX: ${{ vars.CFN_TEMPLATES_PREFIX || 'transact/cloudformation' }}
             CREATE_NAT_GATEWAY: ${{ inputs.create_nat_gateway || 'false' }}
+            MULTI_AZ_NAT: ${{ inputs.multi_az_nat || 'true' }}
         steps:
             - uses: actions/checkout@v4
 
@@ -170,7 +177,8 @@ jobs:
                       ResourceSuffix=${{ env.RESOURCE_SUFFIX }},
                       TemplatesBucket=${{ steps.bucket.outputs.name }},
                       TemplatesPrefix=${{ env.TEMPLATES_PREFIX }},
-                      CreateNatGateway=${{ env.CREATE_NAT_GATEWAY }}
+                      CreateNatGateway=${{ env.CREATE_NAT_GATEWAY }},
+                      MultiAzNat=${{ env.MULTI_AZ_NAT }}
 
             - name: Show stack outputs
               run: |
