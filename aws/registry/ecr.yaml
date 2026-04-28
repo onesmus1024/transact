@@ -5,6 +5,7 @@ Description: >
   tag prefix (e.g. api-<env>-<sha>, web-<env>-<sha>). Image scanning is
   enabled on push, encryption is AES256, and a lifecycle policy retains the
   most recent N images per (component, environment) tag prefix.
+  
 
 Parameters:
   ProjectName:
