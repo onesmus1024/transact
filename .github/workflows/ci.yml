@@ -1,4 +1,4 @@
-name: CI
+name: Lint & Test
 
 # Lint + test only. Triggered by pull requests targeting the release
 # branches (develop, test, main/master). Pushes are NOT covered here —
