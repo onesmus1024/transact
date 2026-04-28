@@ -13,11 +13,11 @@ name: Deploy infrastructure
 #   CFN_TEMPLATES_PREFIX - default "transact/cloudformation".
 
 on:
-  push:
-    branches: [ main, master, test, develop ]
-    paths:
-      - "aws/**"
-      - ".github/workflows/infra.yml"
+  # push:
+    # branches: [ main, master, test, develop ]
+    # paths:
+    #   - "aws/**"
+    #   - ".github/workflows/infra.yml"
   workflow_dispatch:
     inputs:
       environment:

@@ -150,9 +150,9 @@ jobs:
             TARGET_ENV: ${{ needs.build.outputs.target-env }}
             API_IMAGE: ${{ needs.build.outputs.api-image }}
             WEB_IMAGE: ${{ needs.build.outputs.web-image }}
-            STACK_NAME: ${{ env.PROJECT_NAME || 'transact' }}-${{
-                needs.build.outputs.target-env }}-${{ env.AWS_REGION }}-core-${{
-                env.RESOURCE_SUFFIX }}
+            # Workflow-level env (PROJECT_NAME, AWS_REGION, RESOURCE_SUFFIX)
+            # is not visible in job-level env expressions, so the stack name
+            # is composed in a step below instead of here.
         steps:
             - uses: actions/checkout@v4
 
@@ -172,6 +172,11 @@ jobs:
             - name: Resolve EKS cluster + DB endpoint from CFN outputs
               id: cfn
               run: |
+                  set -euo pipefail
+                  STACK_NAME="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-core-${RESOURCE_SUFFIX}"
+                  echo "stack=$STACK_NAME" >> "$GITHUB_OUTPUT"
+                  echo "Resolving outputs from CloudFormation stack: $STACK_NAME"
+
                   CLUSTER=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
                     --query "Stacks[0].Outputs[?OutputKey=='EksClusterName'].OutputValue" --output text)
                   DB_HOST=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
