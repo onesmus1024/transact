@@ -15,10 +15,6 @@ Parameters:
     Type: String
   ResourceSuffix:
     Type: String
-  RepositoryName:
-    Type: String
-    Default: transact
-    Description: ECR repository name (single repo for all app images).
   ImageRetentionCount:
     Type: Number
     Default: 20
@@ -31,7 +27,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      RepositoryName: !Ref RepositoryName
+      RepositoryName: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-${ResourceSuffix}'
       ImageTagMutability: MUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true

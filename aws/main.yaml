@@ -80,11 +80,6 @@ Parameters:
     AllowedValues: [ 'true', 'false' ]
     Description: When true, provision one NAT gateway per AZ for HA.
 
-  ApiRepositoryName:
-    Type: String
-    Default: transact
-    Description: Single ECR repository name (hosts both api-* and web-* tags).
-
   EcrImageRetentionCount:
     Type: Number
     Default: 20
@@ -125,7 +120,6 @@ Resources:
         EnvironmentName: !Ref EnvironmentName
         RegionCode: !Ref RegionCode
         ResourceSuffix: !Ref ResourceSuffix
-        RepositoryName: !Ref ApiRepositoryName
         ImageRetentionCount: !Ref EcrImageRetentionCount
 
 Outputs:

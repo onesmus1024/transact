@@ -21,7 +21,8 @@ on:
 
 env:
     AWS_REGION: us-east-1
-    ECR_REPOSITORY: transact
+    PROJECT_NAME: transact
+    RESOURCE_SUFFIX: "01"
 
 concurrency:
     group: cd-${{ github.ref }}
@@ -69,9 +70,11 @@ jobs:
               run: |
                   SHA="${GITHUB_SHA::12}"
                   TAG="${TARGET_ENV}-${SHA}"
-                  echo "tag=$TAG"                                                  >> "$GITHUB_OUTPUT"
-                  echo "api_image=${{ env.ECR_REPOSITORY }}:api-$TAG"               >> "$GITHUB_OUTPUT"
-                  echo "web_image=${{ env.ECR_REPOSITORY }}:web-$TAG"               >> "$GITHUB_OUTPUT"
+                  REPO="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-ecr-${RESOURCE_SUFFIX}"
+                  echo "tag=$TAG"                              >> "$GITHUB_OUTPUT"
+                  echo "repo=$REPO"                            >> "$GITHUB_OUTPUT"
+                  echo "api_image=${REPO}:api-$TAG"            >> "$GITHUB_OUTPUT"
+                  echo "web_image=${REPO}:web-$TAG"            >> "$GITHUB_OUTPUT"
 
             - name: Configure AWS credentials
               if: env.AWS_ROLE_TO_ASSUME != ''
@@ -104,8 +107,8 @@ jobs:
                   file: Transact.Api/Dockerfile
                   push: ${{ steps.registry.outputs.push }}
                   tags: |
-                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY }}:api-${{ steps.meta.outputs.tag }}
-                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY }}:api-${{ steps.resolve.outputs.env }}-latest
+                      ${{ steps.registry.outputs.prefix }}${{ steps.meta.outputs.repo }}:api-${{ steps.meta.outputs.tag }}
+                      ${{ steps.registry.outputs.prefix }}${{ steps.meta.outputs.repo }}:api-${{ steps.resolve.outputs.env }}-latest
                   cache-from: type=gha,scope=api
                   cache-to: type=gha,scope=api,mode=max
                   provenance: false
@@ -117,8 +120,8 @@ jobs:
                   file: Transact.Web/Dockerfile
                   push: ${{ steps.registry.outputs.push }}
                   tags: |
-                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY }}:web-${{ steps.meta.outputs.tag }}
-                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY }}:web-${{ steps.resolve.outputs.env }}-latest
+                      ${{ steps.registry.outputs.prefix }}${{ steps.meta.outputs.repo }}:web-${{ steps.meta.outputs.tag }}
+                      ${{ steps.registry.outputs.prefix }}${{ steps.meta.outputs.repo }}:web-${{ steps.resolve.outputs.env }}-latest
                   cache-from: type=gha,scope=web
                   cache-to: type=gha,scope=web,mode=max
                   provenance: false
