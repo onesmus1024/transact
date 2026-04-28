@@ -1,0 +1,76 @@
+# Gateway API resources backed by AWS VPC Lattice (amazon-vpc-lattice
+# GatewayClass, installed by the AWS Gateway API Controller deployed via
+# aws/compute/gateway-api.yaml). One Gateway per app; Lattice provisions
+# the underlying service-network listener + service automatically.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: transact
+  namespace: transact
+spec:
+  gatewayClassName: amazon-vpc-lattice
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+# /api/* and friends route to the API after stripping the /api prefix.
+# The API endpoints are at /transactions, /health, /swagger (no /api),
+# so URLRewrite ReplacePrefixMatch("/") gives the upstream path.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: transact-api
+  namespace: transact
+spec:
+  parentRefs:
+    - name: transact
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: transact-api
+          port: 80
+          weight: 1
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /swagger
+        - path:
+            type: PathPrefix
+            value: /health
+      backendRefs:
+        - name: transact-api
+          port: 80
+          weight: 1
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: transact-web
+  namespace: transact
+spec:
+  parentRefs:
+    - name: transact
+      sectionName: http
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: transact-web
+          port: 80
+          weight: 1

@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Transact - Security Groups nested stack. Hosts shared security groups
+  (RDS, future app/compute, bastion) so they can be referenced across
+  stacks without creating circular dependencies between networking,
+  database, and compute stacks.
+
+Parameters:
+  ProjectName:
+    Type: String
+  EnvironmentName:
+    Type: String
+  RegionCode:
+    Type: String
+  ResourceSuffix:
+    Type: String
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC in which to create the security groups.
+
+  VpcCidr:
+    Type: String
+    Description: CIDR block of the VPC; used to scope inbound DB traffic.
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+Resources:
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Ingress to PostgreSQL for ${ProjectName}-${EnvironmentName}'
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !Ref VpcCidr
+          Description: PostgreSQL from inside the VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-sg-${ResourceSuffix}'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  DbSecurityGroupId:
+    Description: Security group for PostgreSQL RDS (allows 5432 from inside the VPC).
+    Value: !Ref DbSecurityGroup

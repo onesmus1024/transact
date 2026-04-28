@@ -1,0 +1,453 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Transact - root stack. Composes nested networking and registry stack(s).
+  Nested templates must be uploaded to S3 first; pass the bucket + prefix as
+  parameters. See aws/networking/*.yaml and aws/registry/*.yaml.
+
+  Resource naming convention:
+    [Project]-[Environment]-[Region|global]-[Service]-[Suffix]
+  e.g. transact-dev-us-east-1-vpc-01
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: transact
+    Description: Short project identifier used to tag/name resources.
+    AllowedPattern: '^[a-z][a-z0-9-]{1,30}$'
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+    AllowedValues: [ dev, test, prod ]
+    Description: Target environment.
+
+  RegionCode:
+    Type: String
+    Default: us-east-1
+    Description: >
+      Region segment used in resource names. Defaults to the AWS region
+      (e.g. us-east-1). Use "global" for region-agnostic resources.
+    AllowedPattern: '^(global|[a-z]{2}-[a-z]+-\d)$'
+
+  ResourceSuffix:
+    Type: String
+    Default: '01'
+    Description: Instance suffix to disambiguate parallel deployments.
+    AllowedPattern: '^[a-z0-9]{1,5}$'
+
+
+  TemplatesBucket:
+    Type: String
+    Description: >
+      S3 bucket holding the nested templates (e.g. my-cfn-artifacts).
+      Upload the contents of aws/networking/ before deploying.
+
+  TemplatesPrefix:
+    Type: String
+    Default: transact/cloudformation
+    Description: Key prefix in TemplatesBucket where nested templates live (no trailing slash).
+
+  VpcCidr:
+    Type: String
+    Default: 10.20.0.0/16
+    AllowedPattern: '^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$'
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.20.1.0/24
+
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.20.2.0/24
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: 10.20.11.0/24
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: 10.20.12.0/24
+
+  CreateNatGateway:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: Whether to provision a NAT gateway for private subnet egress.
+
+  MultiAzNat:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: When true, provision one NAT gateway per AZ for HA.
+
+  EcrImageRetentionCount:
+    Type: Number
+    Default: 20
+    MinValue: 1
+
+  DbName:
+    Type: String
+    Default: transact
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
+
+  DbMasterUsername:
+    Type: String
+    Default: transact_admin
+    NoEcho: true
+
+  DbInstanceClass:
+    Type: String
+    Default: auto
+    Description: >
+      RDS instance class. 'auto' picks per-env defaults inside the nested
+      stack (dev=db.t4g.micro, test=db.t4g.small, prod=db.m7g.large).
+      Override with any valid RDS instance class.
+
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+
+  DbMaxAllocatedStorage:
+    Type: Number
+    Default: 100
+    MinValue: 20
+
+  DbEngineVersion:
+    Type: String
+    Default: '16.4'
+
+  DbMultiAz:
+    Type: String
+    Default: 'false'
+    AllowedValues: [ 'true', 'false' ]
+
+  DbBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 0
+    MaxValue: 35
+
+  DbDeletionProtection:
+    Type: String
+    Default: 'false'
+    AllowedValues: [ 'true', 'false' ]
+
+  EksKubernetesVersion:
+    Type: String
+    Default: '1.31'
+
+  EksNodeInstanceType:
+    Type: String
+    Default: auto
+    Description: 'auto -> per-env default (dev=t3.small, test=t3.medium, prod=m7g.large).'
+
+  EksNodeDesiredSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: '0 -> per-env default.'
+
+  EksNodeMinSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  EksNodeMaxSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  EksEndpointPublicAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+
+  EksEndpointPrivateAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+
+  EksPublicAccessCidrs:
+    Type: CommaDelimitedList
+    Default: '0.0.0.0/0'
+
+  LatticeAuthType:
+    Type: String
+    Default: NONE
+    AllowedValues: [ NONE, AWS_IAM ]
+    Description: VPC Lattice service network auth mode.
+
+Resources:
+  VpcStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/networking/vpc.yaml
+      TimeoutInMinutes: 20
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-vpc-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcCidr: !Ref VpcCidr
+        PublicSubnet1Cidr: !Ref PublicSubnet1Cidr
+        PublicSubnet2Cidr: !Ref PublicSubnet2Cidr
+        PrivateSubnet1Cidr: !Ref PrivateSubnet1Cidr
+        PrivateSubnet2Cidr: !Ref PrivateSubnet2Cidr
+        CreateNatGateway: !Ref CreateNatGateway
+        MultiAzNat: !Ref MultiAzNat
+
+  SgStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/networking/sg.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-sg-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        VpcCidr: !GetAtt VpcStack.Outputs.VpcCidr
+
+  EcrStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/registry/ecr.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        ImageRetentionCount: !Ref EcrImageRetentionCount
+
+  DbSecretStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/secrets/db-secret.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        DbMasterUsername: !Ref DbMasterUsername
+
+  RdsPostgresStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/database/rds-postgres.yaml
+      TimeoutInMinutes: 45
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        DbSecurityGroupId: !GetAtt SgStack.Outputs.DbSecurityGroupId
+        PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+        DbName: !Ref DbName
+        DbMasterSecretArn: !GetAtt DbSecretStack.Outputs.DbMasterSecretArn
+        DbInstanceClass: !Ref DbInstanceClass
+        DbAllocatedStorage: !Ref DbAllocatedStorage
+        DbMaxAllocatedStorage: !Ref DbMaxAllocatedStorage
+        EngineVersion: !Ref DbEngineVersion
+        MultiAz: !Ref DbMultiAz
+        BackupRetentionDays: !Ref DbBackupRetentionDays
+        DeletionProtection: !Ref DbDeletionProtection
+
+  EksStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/compute/eks.yaml
+      TimeoutInMinutes: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+        PublicSubnetIds: !GetAtt VpcStack.Outputs.PublicSubnetIds
+        KubernetesVersion: !Ref EksKubernetesVersion
+        NodeInstanceType: !Ref EksNodeInstanceType
+        NodeDesiredSize: !Ref EksNodeDesiredSize
+        NodeMinSize: !Ref EksNodeMinSize
+        NodeMaxSize: !Ref EksNodeMaxSize
+        EndpointPublicAccess: !Ref EksEndpointPublicAccess
+        EndpointPrivateAccess: !Ref EksEndpointPrivateAccess
+        PublicAccessCidrs: !Join [ ',', !Ref EksPublicAccessCidrs ]
+
+  LatticeStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: VpcStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/networking/lattice.yaml
+      TimeoutInMinutes: 15
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-lattice-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        VpcId: !GetAtt VpcStack.Outputs.VpcId
+        AuthType: !Ref LatticeAuthType
+
+  GatewayApiStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - EksStack
+      - LatticeStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/compute/gateway-api.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-gwapi-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        OidcProviderArn: !GetAtt EksStack.Outputs.OidcProviderArn
+        OidcIssuerUrl: !GetAtt EksStack.Outputs.OidcIssuerUrl
+
+  EsoStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: EksStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/compute/external-secrets.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eso-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        OidcProviderArn: !GetAtt EksStack.Outputs.OidcProviderArn
+        OidcIssuerUrl: !GetAtt EksStack.Outputs.OidcIssuerUrl
+
+Outputs:
+  VpcId:
+    Description: VPC ID from the nested VPC stack.
+    Value: !GetAtt VpcStack.Outputs.VpcId
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-vpc-id-${ResourceSuffix}'
+
+  PublicSubnetIds:
+    Description: Comma-separated public subnet IDs.
+    Value: !GetAtt VpcStack.Outputs.PublicSubnetIds
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-public-subnets-${ResourceSuffix}'
+
+  PrivateSubnetIds:
+    Description: Comma-separated private subnet IDs.
+    Value: !GetAtt VpcStack.Outputs.PrivateSubnetIds
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-private-subnets-${ResourceSuffix}'
+
+  ApiRepositoryUri:
+    Description: ECR repository URI (single repo for api-* and web-* tags).
+    Value: !GetAtt EcrStack.Outputs.RepositoryUri
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-ecr-uri-${ResourceSuffix}'
+
+  WebRepositoryUri:
+    Description: Same as ApiRepositoryUri (single shared repo).
+    Value: !GetAtt EcrStack.Outputs.RepositoryUri
+
+  DbEndpointAddress:
+    Description: PostgreSQL endpoint hostname.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbEndpointAddress
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-endpoint-${ResourceSuffix}'
+
+  DbEndpointPort:
+    Description: PostgreSQL endpoint port.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbEndpointPort
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-port-${ResourceSuffix}'
+
+  DbName:
+    Description: Initial database name.
+    Value: !GetAtt RdsPostgresStack.Outputs.DbName
+
+  DbSecurityGroupId:
+    Description: Security group attached to the RDS instance.
+    Value: !GetAtt SgStack.Outputs.DbSecurityGroupId
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-sg-${ResourceSuffix}'
+
+  DbMasterSecretArn:
+    Description: ARN of the Secrets Manager secret with master credentials.
+    Value: !GetAtt DbSecretStack.Outputs.DbMasterSecretArn
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-arn-${ResourceSuffix}'
+
+  EksClusterName:
+    Description: EKS cluster name.
+    Value: !GetAtt EksStack.Outputs.ClusterName
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-name-${ResourceSuffix}'
+
+  EksClusterArn:
+    Description: EKS cluster ARN.
+    Value: !GetAtt EksStack.Outputs.ClusterArn
+
+  EksClusterEndpoint:
+    Description: EKS API server endpoint.
+    Value: !GetAtt EksStack.Outputs.ClusterEndpoint
+
+  EksOidcProviderArn:
+    Description: IAM OIDC provider ARN (for IRSA trust policies).
+    Value: !GetAtt EksStack.Outputs.OidcProviderArn
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-oidc-arn-${ResourceSuffix}'
+
+  LatticeServiceNetworkId:
+    Description: VPC Lattice service network ID (set as gateway annotation).
+    Value: !GetAtt LatticeStack.Outputs.ServiceNetworkId
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-lattice-id-${ResourceSuffix}'
+
+  LatticeServiceNetworkArn:
+    Description: VPC Lattice service network ARN.
+    Value: !GetAtt LatticeStack.Outputs.ServiceNetworkArn
+
+  GatewayApiControllerRoleArn:
+    Description: IRSA role ARN for the AWS Gateway API Controller ServiceAccount.
+    Value: !GetAtt GatewayApiStack.Outputs.ControllerRoleArn
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-gwapi-role-arn-${ResourceSuffix}'
+
+  ExternalSecretsRoleArn:
+    Description: IRSA role ARN for the External Secrets Operator ServiceAccount.
+    Value: !GetAtt EsoStack.Outputs.EsoRoleArn
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eso-role-arn-${ResourceSuffix}'

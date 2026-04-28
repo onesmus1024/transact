@@ -5,7 +5,7 @@ namespace Transact.Domain.Entities
     {
         public Guid Id { get; set; }
         public decimal Amount { get; set; }
-        public string Currency { get; set; } = "KES"; 
+        public string Currency { get; set; } = "KES";
         public TransactionType Type { get; set; }
         public DateTime CreatedAt { get; set; }
         public required string SenderId { get; set; }
