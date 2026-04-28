@@ -1,21 +1,25 @@
-name: CD
+name: Deploy
 
-# Build & push images, then deploy to the env mapped from the branch:
+# Build images and deploy to the env mapped from the branch (or chosen via
+# workflow_dispatch input):
 #   develop      -> dev   (auto)
 #   test         -> test  (manual approval via Environment)
 #   main/master  -> prod  (manual approval via Environment)
 #
-# Approval gates are configured under Settings → Environments. The lint/test
-# checks are re-run here so a CD run is self-contained and re-runnable.
+# Approval gates come from GitHub Environments (Settings -> Environments).
 
 on:
     push:
         branches: [ main, master, test, develop ]
     workflow_dispatch:
+        inputs:
+            environment:
+                description: Target environment to deploy to
+                required: true
+                type: choice
+                options: [ dev, test, prod ]
 
 env:
-    DOTNET_VERSION: "10.0.x"
-    NODE_VERSION: "22"
     AWS_REGION: us-east-1
     ECR_REPOSITORY_API: transact-api
     ECR_REPOSITORY_WEB: transact-web
@@ -25,88 +29,44 @@ concurrency:
     cancel-in-progress: false # never cancel an in-flight deploy
 
 jobs:
-    # ---- Re-run lint/test as a gate before producing images ------------------
-    backend-test:
-        name: Backend · build & test
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-            - uses: actions/setup-dotnet@v4
-              with:
-                  dotnet-version: ${{ env.DOTNET_VERSION }}
-            - uses: actions/cache@v4
-              with:
-                  path: ~/.nuget/packages
-                  key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
-                  restore-keys: nuget-${{ runner.os }}-
-            - run: dotnet restore Transact.slnx
-            - run: dotnet build Transact.slnx --configuration Release --no-restore
-            - shell: bash
-              run: |
-                  shopt -s nullglob
-                  tests=(**/*Tests.csproj **/*.Test.csproj)
-                  if [ ${#tests[@]} -eq 0 ]; then
-                    echo "No test projects found — skipping."
-                  else
-                    dotnet test Transact.slnx --configuration Release --no-build
-                  fi
-
-    frontend-test:
-        name: Frontend · lint, test & build
-        runs-on: ubuntu-latest
-        defaults:
-            run:
-                working-directory: Transact.Web
-        steps:
-            - uses: actions/checkout@v4
-            - uses: actions/setup-node@v4
-              with:
-                  node-version: ${{ env.NODE_VERSION }}
-                  cache: npm
-                  cache-dependency-path: Transact.Web/package-lock.json
-            - run: npm ci
-            - run: npm run build -- --configuration production
-
-    # ---- Map branch -> environment ------------------------------------------
-    resolve-env:
-        name: Resolve target environment
-        runs-on: ubuntu-latest
-        outputs:
-            env: ${{ steps.map.outputs.env }}
-        steps:
-            - id: map
-              run: |
-                  case "${GITHUB_REF_NAME}" in
-                    develop)        echo "env=dev"  >> "$GITHUB_OUTPUT" ;;
-                    test)           echo "env=test" >> "$GITHUB_OUTPUT" ;;
-                    main|master)    echo "env=prod" >> "$GITHUB_OUTPUT" ;;
-                    *)              echo "env="     >> "$GITHUB_OUTPUT" ;;
-                  esac
-
-    # ---- Build (and optionally push) Docker images --------------------------
-    docker:
-        name: Docker · build & push
-        needs: [ backend-test, frontend-test, resolve-env ]
-        if: needs.resolve-env.outputs.env != ''
+    # ---- 1. Build (resolve env + build & push Docker images) ----------------
+    build:
+        name: Build & push images
         runs-on: ubuntu-latest
         permissions:
             contents: read
             id-token: write # OIDC -> AWS
         env:
             AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-            TARGET_ENV: ${{ needs.resolve-env.outputs.env }}
         outputs:
+            target-env: ${{ steps.resolve.outputs.env }}
             image-tag: ${{ steps.meta.outputs.tag }}
             api-image: ${{ steps.meta.outputs.api_image }}
             web-image: ${{ steps.meta.outputs.web_image }}
-            target-env: ${{ needs.resolve-env.outputs.env }}
         steps:
             - uses: actions/checkout@v4
 
-            - uses: docker/setup-buildx-action@v3
+            - name: Resolve target environment
+              id: resolve
+              run: |
+                  if [ -n "${{ inputs.environment }}" ]; then
+                    echo "env=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+                  else
+                    case "${GITHUB_REF_NAME}" in
+                      develop)        echo "env=dev"  >> "$GITHUB_OUTPUT" ;;
+                      test)           echo "env=test" >> "$GITHUB_OUTPUT" ;;
+                      main|master)    echo "env=prod" >> "$GITHUB_OUTPUT" ;;
+                      *)              echo "::error::Branch ${GITHUB_REF_NAME} is not mapped to an environment." ; exit 1 ;;
+                    esac
+                  fi
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
 
             - name: Compute image tag
               id: meta
+              env:
+                  TARGET_ENV: ${{ steps.resolve.outputs.env }}
               run: |
                   SHA="${GITHUB_SHA::12}"
                   TAG="${TARGET_ENV}-${SHA}"
@@ -146,7 +106,7 @@ jobs:
                   push: ${{ steps.registry.outputs.push }}
                   tags: |
                       ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.tag }}
-                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_API }}:${{ env.TARGET_ENV }}-latest
+                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_API }}:${{ steps.resolve.outputs.env }}-latest
                   cache-from: type=gha,scope=api
                   cache-to: type=gha,scope=api,mode=max
                   provenance: false
@@ -159,62 +119,27 @@ jobs:
                   push: ${{ steps.registry.outputs.push }}
                   tags: |
                       ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.tag }}
-                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_WEB }}:${{ env.TARGET_ENV }}-latest
+                      ${{ steps.registry.outputs.prefix }}${{ env.ECR_REPOSITORY_WEB }}:${{ steps.resolve.outputs.env }}-latest
                   cache-from: type=gha,scope=web
                   cache-to: type=gha,scope=web,mode=max
                   provenance: false
 
-    # ---- Per-environment deploys (approval gates via GitHub Environments) ---
-    deploy-dev:
-        name: Deploy · dev (auto)
-        needs: docker
-        if: needs.docker.outputs.target-env == 'dev'
+    # ---- 2. Deploy (single job, environment chosen dynamically) -------------
+    # Approval gates: configure required reviewers on the `test` and `prod`
+    # GitHub Environments under Settings -> Environments. `dev` deploys auto.
+    deploy:
+        name: Deploy · ${{ needs.build.outputs.target-env }}
+        needs: build
         runs-on: ubuntu-latest
         environment:
-            name: dev
-            url: https://dev.transact.example.com
+            name: ${{ needs.build.outputs.target-env }}
         steps:
             - name: Show images being deployed
               run: |
-                  echo "Env      : ${{ needs.docker.outputs.target-env }}"
-                  echo "API image: ${{ needs.docker.outputs.api-image }}"
-                  echo "Web image: ${{ needs.docker.outputs.web-image }}"
-                  echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
+                  echo "Env      : ${{ needs.build.outputs.target-env }}"
+                  echo "API image: ${{ needs.build.outputs.api-image }}"
+                  echo "Web image: ${{ needs.build.outputs.web-image }}"
+                  echo "Tag      : ${{ needs.build.outputs.image-tag }}"
             - name: Deploy
-              run: echo "TODO — invoke dev deploy here (e.g. aws ecs update-service ...)"
-
-    deploy-test:
-        name: Deploy · test (manual approval)
-        needs: docker
-        if: needs.docker.outputs.target-env == 'test'
-        runs-on: ubuntu-latest
-        environment:
-            name: test
-            url: https://test.transact.example.com
-        steps:
-            - name: Show images being deployed
-              run: |
-                  echo "Env      : ${{ needs.docker.outputs.target-env }}"
-                  echo "API image: ${{ needs.docker.outputs.api-image }}"
-                  echo "Web image: ${{ needs.docker.outputs.web-image }}"
-                  echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
-            - name: Deploy
-              run: echo "TODO — invoke test deploy here"
-
-    deploy-prod:
-        name: Deploy · prod (manual approval)
-        needs: docker
-        if: needs.docker.outputs.target-env == 'prod'
-        runs-on: ubuntu-latest
-        environment:
-            name: prod
-            url: https://transact.example.com
-        steps:
-            - name: Show images being deployed
-              run: |
-                  echo "Env      : ${{ needs.docker.outputs.target-env }}"
-                  echo "API image: ${{ needs.docker.outputs.api-image }}"
-                  echo "Web image: ${{ needs.docker.outputs.web-image }}"
-                  echo "Tag      : ${{ needs.docker.outputs.image-tag }}"
-            - name: Deploy
-              run: echo "TODO — invoke prod deploy here"
+              run: echo "TODO — invoke ${{ needs.build.outputs.target-env }} deploy here (e.g.
+                  aws ecs update-service ...)"

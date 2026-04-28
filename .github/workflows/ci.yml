@@ -1,13 +1,11 @@
-name: CI
+name: Lint & Test
 
-# Lint, build and test only. Runs on every PR and on pushes to feature
-# branches. Pushes to release branches (develop/test/main/master) are
-# handled by cd.yml, which re-runs the same checks before deploying — so
-# we exclude those here to avoid double runs.
+# Lint + test only. Triggered by pull requests targeting the release
+# branches (develop, test, main/master). Pushes are NOT covered here —
+# CD handles release-branch pushes; feature branches are validated via
+# their PRs.
 
 on:
-    push:
-        branches-ignore: [ main, master, test, develop ]
     pull_request:
         branches: [ main, master, test, develop ]
     workflow_dispatch:
@@ -21,8 +19,8 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    backend-test:
-        name: Backend · build & test
+    lint:
+        name: Lint (backend + frontend)
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
@@ -39,17 +37,59 @@ jobs:
                   key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
                   restore-keys: nuget-${{ runner.os }}-
 
-            - name: Restore
+            - name: Restore (.NET)
               run: dotnet restore Transact.slnx
 
-            - name: Lint (format check)
+            - name: Lint .NET (format check)
               run: dotnet format Transact.slnx --verify-no-changes --verbosity diagnostic
-              continue-on-error: true
 
-            - name: Build
+            - name: Setup Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: ${{ env.NODE_VERSION }}
+                  cache: npm
+                  cache-dependency-path: Transact.Web/package-lock.json
+
+            - name: Install (npm)
+              working-directory: Transact.Web
+              run: npm ci
+
+            - name: Lint Angular
+              working-directory: Transact.Web
+              shell: bash
+              run: |
+                  if npm run | grep -qE '^\s*lint'; then
+                    npm run lint
+                  else
+                    echo "No lint script — skipping."
+                  fi
+
+    test:
+        name: Test (backend + frontend)
+        needs: lint # fail-fast: skip tests if lint fails
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: ${{ env.DOTNET_VERSION }}
+
+            - name: Cache NuGet packages
+              uses: actions/cache@v4
+              with:
+                  path: ~/.nuget/packages
+                  key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+                  restore-keys: nuget-${{ runner.os }}-
+
+            - name: Restore (.NET)
+              run: dotnet restore Transact.slnx
+
+            - name: Build (.NET)
               run: dotnet build Transact.slnx --configuration Release --no-restore
 
-            - name: Test
+            - name: Test .NET
               shell: bash
               run: |
                   shopt -s nullglob
@@ -62,22 +102,13 @@ jobs:
                       --collect:"XPlat Code Coverage"
                   fi
 
-            - name: Upload test results
+            - name: Upload .NET test results
               if: always()
               uses: actions/upload-artifact@v4
               with:
                   name: backend-test-results
                   path: "**/TestResults/**"
                   if-no-files-found: ignore
-
-    frontend-test:
-        name: Frontend · lint, test & build
-        runs-on: ubuntu-latest
-        defaults:
-            run:
-                working-directory: Transact.Web
-        steps:
-            - uses: actions/checkout@v4
 
             - name: Setup Node
               uses: actions/setup-node@v4
@@ -86,26 +117,16 @@ jobs:
                   cache: npm
                   cache-dependency-path: Transact.Web/package-lock.json
 
-            - name: Install
+            - name: Install (npm)
+              working-directory: Transact.Web
               run: npm ci
 
-            - name: Lint
-              shell: bash
-              run: |
-                  if npm run | grep -qE '^\s*lint'; then
-                    npm run lint
-                  else
-                    echo "No lint script — skipping."
-                  fi
-
-            - name: Test
+            - name: Test Angular
+              working-directory: Transact.Web
               shell: bash
               run: |
                   if npm run | grep -qE '^\s*test'; then
-                    CI=true npm test -- --watch=false --browsers=ChromeHeadless || true
+                    CI=true npm test -- --watch=false --browsers=ChromeHeadless
                   else
                     echo "No test script — skipping."
                   fi
-
-            - name: Build (production)
-              run: npm run build -- --configuration production
