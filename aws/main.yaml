@@ -187,6 +187,21 @@ Resources:
         ResourceSuffix: !Ref ResourceSuffix
         ImageRetentionCount: !Ref EcrImageRetentionCount
 
+  DbSecretStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/secrets/db-secret.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        DbMasterUsername: !Ref DbMasterUsername
+
   RdsPostgresStack:
     Type: AWS::CloudFormation::Stack
     DependsOn: VpcStack
@@ -205,7 +220,7 @@ Resources:
         DbSecurityGroupId: !GetAtt SgStack.Outputs.DbSecurityGroupId
         PrivateSubnetIds: !GetAtt VpcStack.Outputs.PrivateSubnetIds
         DbName: !Ref DbName
-        DbMasterUsername: !Ref DbMasterUsername
+        DbMasterSecretArn: !GetAtt DbSecretStack.Outputs.DbMasterSecretArn
         DbInstanceClass: !Ref DbInstanceClass
         DbAllocatedStorage: !Ref DbAllocatedStorage
         DbMaxAllocatedStorage: !Ref DbMaxAllocatedStorage
@@ -267,6 +282,6 @@ Outputs:
 
   DbMasterSecretArn:
     Description: ARN of the Secrets Manager secret with master credentials.
-    Value: !GetAtt RdsPostgresStack.Outputs.DbMasterSecretArn
+    Value: !GetAtt DbSecretStack.Outputs.DbMasterSecretArn
     Export:
       Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-arn-${ResourceSuffix}'

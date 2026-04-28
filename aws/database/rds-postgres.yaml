@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Transact - PostgreSQL RDS nested stack. Provisions a single RDS for
-  PostgreSQL instance in the private subnets of the VPC stack, with the
-  master password stored in AWS Secrets Manager. A security group permits
-  inbound traffic on the DB port from sources inside the VPC CIDR.
+  PostgreSQL instance in the private subnets of the VPC stack. Inputs
+  (security group, master credentials secret) are owned by sibling stacks
+  (aws/networking/sg.yaml, aws/secrets/db-secret.yaml) and passed in by
+  the root template.
 
 Parameters:
   ProjectName:
@@ -23,9 +24,9 @@ Parameters:
   DbSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Description: >
-      Security group for the DB instance. Provisioned in the networking
-      stack so it can be shared with app/compute stacks without creating
-      a circular dependency.
+      Security group attached to the DB instance. Provisioned in
+      aws/networking/sg.yaml so it can be shared with app/compute stacks
+      without creating a circular dependency.
 
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
@@ -37,11 +38,13 @@ Parameters:
     AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
     Description: Initial database name created on the instance.
 
-  DbMasterUsername:
+  DbMasterSecretArn:
     Type: String
-    Default: transact_admin
-    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
-    NoEcho: true
+    Description: >
+      ARN of an existing Secrets Manager secret that contains the master
+      credentials as JSON: {"username":"...","password":"..."}.
+      Provisioned by the secrets nested stack.
+    AllowedPattern: '^arn:aws[a-zA-Z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:.+$'
 
   DbInstanceClass:
     Type: String
@@ -117,20 +120,6 @@ Resources:
         - Key: Environment
           Value: !Ref EnvironmentName
 
-  DbMasterSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub '${ProjectName}/${EnvironmentName}/${RegionCode}/rds/postgres/${ResourceSuffix}'
-      Description: !Sub 'Master credentials for ${ProjectName}-${EnvironmentName} PostgreSQL'
-      GenerateSecretString:
-        SecretStringTemplate: !Sub '{"username":"${DbMasterUsername}"}'
-        GenerateStringKey: password
-        PasswordLength: 32
-        ExcludeCharacters: '"@/\$`'
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-${ResourceSuffix}'
-
   DbInstance:
     Type: AWS::RDS::DBInstance
     DeletionPolicy: Snapshot
@@ -148,8 +137,8 @@ Resources:
       StorageType: gp3
       StorageEncrypted: true
       DBName: !Ref DbName
-      MasterUsername: !Sub '{{resolve:secretsmanager:${DbMasterSecret}:SecretString:username}}'
-      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbMasterSecret}:SecretString:password}}'
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DbMasterSecretArn}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbMasterSecretArn}:SecretString:password}}'
       DBSubnetGroupName: !Ref DbSubnetGroup
       VPCSecurityGroups:
         - !Ref DbSecurityGroupId
@@ -174,7 +163,7 @@ Resources:
   DbSecretAttachment:
     Type: AWS::SecretsManager::SecretTargetAttachment
     Properties:
-      SecretId: !Ref DbMasterSecret
+      SecretId: !Ref DbMasterSecretArn
       TargetId: !Ref DbInstance
       TargetType: AWS::RDS::DBInstance
 
@@ -197,4 +186,4 @@ Outputs:
 
   DbMasterSecretArn:
     Description: ARN of the Secrets Manager secret holding master credentials.
-    Value: !Ref DbMasterSecret
+    Value: !Ref DbMasterSecretArn
