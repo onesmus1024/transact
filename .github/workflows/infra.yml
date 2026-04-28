@@ -26,10 +26,10 @@ on:
         type: choice
         options: [ dev, test, prod ]
       create_nat_gateway:
-        description: Provision NAT gateway (costs ~$32/mo)
+        description: Provision NAT gateway (required for EKS nodes; ~$32/mo)
         required: false
         type: choice
-        default: "false"
+        default: "true"
         options: [ "true", "false" ]
       multi_az_nat:
         description: One NAT per AZ for HA (doubles NAT cost)
@@ -80,7 +80,7 @@ jobs:
     env:
       TARGET_ENV: ${{ needs.resolve.outputs.target-env }}
       TEMPLATES_PREFIX: ${{ vars.CFN_TEMPLATES_PREFIX || 'transact/cloudformation' }}
-      CREATE_NAT_GATEWAY: ${{ inputs.create_nat_gateway || 'false' }}
+      CREATE_NAT_GATEWAY: ${{ inputs.create_nat_gateway || 'true' }}
       MULTI_AZ_NAT: ${{ inputs.multi_az_nat || 'true' }}
     steps:
       - uses: actions/checkout@v4

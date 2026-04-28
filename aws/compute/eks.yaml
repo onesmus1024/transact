@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Transact - EKS nested stack. Provisions an EKS cluster in the private
+  subnets of the VPC stack, a managed node group, the OIDC provider for
+  IAM Roles for Service Accounts (IRSA), and the core managed addons
+  (vpc-cni, coredns, kube-proxy). Worker IAM role is created here; cluster
+  IAM role is created here.
+
+Parameters:
+  ProjectName:
+    Type: String
+  EnvironmentName:
+    Type: String
+    AllowedValues: [ dev, test, prod ]
+  RegionCode:
+    Type: String
+  ResourceSuffix:
+    Type: String
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets for the cluster ENIs and worker nodes.
+
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >
+      Public subnets. Only used when EndpointPublicAccess is true so the
+      EKS-managed control-plane ENIs can reach the public endpoint, and
+      for any future LoadBalancer-type services you create.
+
+  KubernetesVersion:
+    Type: String
+    Default: '1.31'
+    Description: EKS control plane version.
+
+  NodeInstanceType:
+    Type: String
+    Default: auto
+    Description: >
+      EC2 instance type for the managed node group. Use 'auto' to pick
+      a per-env default via EnvDefaults mapping.
+
+  NodeDesiredSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: '0 = use per-env default from EnvDefaults mapping.'
+
+  NodeMinSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  NodeMaxSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  NodeDiskSizeGiB:
+    Type: Number
+    Default: 30
+    MinValue: 20
+    MaxValue: 1024
+
+  EndpointPublicAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: >
+      When true, the API server is reachable from the internet (still
+      auth-gated). For prod prefer 'false' + a bastion / VPN / VPC peering.
+
+  EndpointPrivateAccess:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+
+  PublicAccessCidrs:
+    Type: CommaDelimitedList
+    Default: '0.0.0.0/0'
+    Description: CIDRs allowed to hit the public API endpoint when enabled.
+
+Conditions:
+  UseAutoInstanceType: !Equals [ !Ref NodeInstanceType, 'auto' ]
+  UseAutoDesired:      !Equals [ !Ref NodeDesiredSize, 0 ]
+  UseAutoMin:          !Equals [ !Ref NodeMinSize, 0 ]
+  UseAutoMax:          !Equals [ !Ref NodeMaxSize, 0 ]
+
+Mappings:
+  EnvDefaults:
+    dev:
+      InstanceType: t3.small
+      Desired: 2
+      Min: 1
+      Max: 3
+    test:
+      InstanceType: t3.medium
+      Desired: 2
+      Min: 2
+      Max: 4
+    prod:
+      InstanceType: m7g.large
+      Desired: 3
+      Min: 3
+      Max: 6
+
+Resources:
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-cluster-role-${ResourceSuffix}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-cluster-role-${ResourceSuffix}'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-node-role-${ResourceSuffix}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-node-role-${ResourceSuffix}'
+
+  Cluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-${ResourceSuffix}'
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt ClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds: !Split
+          - ','
+          - !Join
+            - ','
+            - - !Join [ ',', !Ref PrivateSubnetIds ]
+              - !Join [ ',', !Ref PublicSubnetIds ]
+        EndpointPublicAccess: !Ref EndpointPublicAccess
+        EndpointPrivateAccess: !Ref EndpointPrivateAccess
+        PublicAccessCidrs: !Ref PublicAccessCidrs
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
+        BootstrapClusterCreatorAdminPermissions: true
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-${ResourceSuffix}'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # OIDC provider for IRSA (IAM Roles for Service Accounts).
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !GetAtt Cluster.OpenIdConnectIssuerUrl
+      ClientIdList:
+        - sts.amazonaws.com
+      # Thumbprint of the EKS OIDC issuer root CA (Amazon Root CA 1).
+      # AWS recommends letting AWS manage it but the property is required.
+      ThumbprintList:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-oidc-${ResourceSuffix}'
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref Cluster
+      NodegroupName: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-ng-${ResourceSuffix}'
+      NodeRole: !GetAtt NodeRole.Arn
+      Subnets: !Ref PrivateSubnetIds
+      AmiType: AL2023_x86_64_STANDARD
+      CapacityType: ON_DEMAND
+      InstanceTypes:
+        - !If
+          - UseAutoInstanceType
+          - !FindInMap [ EnvDefaults, !Ref EnvironmentName, InstanceType ]
+          - !Ref NodeInstanceType
+      DiskSize: !Ref NodeDiskSizeGiB
+      ScalingConfig:
+        DesiredSize: !If
+          - UseAutoDesired
+          - !FindInMap [ EnvDefaults, !Ref EnvironmentName, Desired ]
+          - !Ref NodeDesiredSize
+        MinSize: !If
+          - UseAutoMin
+          - !FindInMap [ EnvDefaults, !Ref EnvironmentName, Min ]
+          - !Ref NodeMinSize
+        MaxSize: !If
+          - UseAutoMax
+          - !FindInMap [ EnvDefaults, !Ref EnvironmentName, Max ]
+          - !Ref NodeMaxSize
+      UpdateConfig:
+        MaxUnavailable: 1
+      Tags:
+        Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-ng-${ResourceSuffix}'
+        Project: !Ref ProjectName
+        Environment: !Ref EnvironmentName
+
+  AddonVpcCni:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: vpc-cni
+      ResolveConflicts: OVERWRITE
+
+  AddonCoreDns:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: coredns
+      ResolveConflicts: OVERWRITE
+
+  AddonKubeProxy:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: kube-proxy
+      ResolveConflicts: OVERWRITE
+
+Outputs:
+  ClusterName:
+    Description: EKS cluster name.
+    Value: !Ref Cluster
+
+  ClusterArn:
+    Description: EKS cluster ARN.
+    Value: !GetAtt Cluster.Arn
+
+  ClusterEndpoint:
+    Description: EKS API server endpoint.
+    Value: !GetAtt Cluster.Endpoint
+
+  ClusterCertificateAuthorityData:
+    Description: Base64-encoded cluster CA data (for kubeconfig).
+    Value: !GetAtt Cluster.CertificateAuthorityData
+
+  ClusterSecurityGroupId:
+    Description: Cluster security group auto-created by EKS (for pod-to-control-plane comms).
+    Value: !GetAtt Cluster.ClusterSecurityGroupId
+
+  OidcIssuerUrl:
+    Description: OIDC issuer URL (for IRSA trust policies).
+    Value: !GetAtt Cluster.OpenIdConnectIssuerUrl
+
+  OidcProviderArn:
+    Description: ARN of the IAM OIDC provider.
+    Value: !Ref OidcProvider
+
+  NodeGroupName:
+    Description: Managed node group name.
+    Value: !Ref NodeGroup
+
+  NodeRoleArn:
+    Description: IAM role ARN attached to worker nodes.
+    Value: !GetAtt NodeRole.Arn
