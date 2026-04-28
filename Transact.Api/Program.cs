@@ -80,6 +80,26 @@ app.MapGet("/", () => "Welcome to the Transact API!").WithName("Home");
 
 app.MapGet("/health", () => Results.Ok(new { status = "Healthy" })).WithName("HealthCheck");
 
+// Liveness: process is up. Used by Kubernetes livenessProbe.
+app.MapGet("/health/live", () => Results.Ok(new { status = "Live" })).WithName("HealthLive");
+
+// Readiness: dependencies (DB) are reachable. Used by Kubernetes
+// readinessProbe to decide if the pod can receive traffic.
+app.MapGet("/health/ready", async (AppDbContext db, CancellationToken ct) =>
+{
+    try
+    {
+        var canConnect = await db.Database.CanConnectAsync(ct);
+        return canConnect
+            ? Results.Ok(new { status = "Ready" })
+            : Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+    catch
+    {
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+    }
+}).WithName("HealthReady");
+
 app.MapPost("/transactions", async (CreateTransactionCommand command, ISender sender, CancellationToken ct) =>
 {
     var transaction = await sender.Send(command, ct);

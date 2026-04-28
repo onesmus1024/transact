@@ -48,7 +48,7 @@ services:
     depends_on:
       - api
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8080}:8080"
     networks: [ transact-net ]
 
 volumes:

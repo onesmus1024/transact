@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Transact - AWS Gateway API Controller (VPC Lattice) IRSA role nested
+  stack. Creates the IAM role assumed by the controller's Kubernetes
+  ServiceAccount via OIDC. The controller itself is installed in-cluster
+  (Helm/manifests) and references this role via the
+  eks.amazonaws.com/role-arn annotation on its ServiceAccount.
+  Reference: https://github.com/aws/aws-application-networking-k8s
+
+Parameters:
+  ProjectName:
+    Type: String
+  EnvironmentName:
+    Type: String
+    AllowedValues: [ dev, test, prod ]
+  RegionCode:
+    Type: String
+  ResourceSuffix:
+    Type: String
+
+  OidcProviderArn:
+    Type: String
+    Description: ARN of the cluster's IAM OIDC provider (from EKS stack).
+    AllowedPattern: '^arn:aws[a-zA-Z-]*:iam::\d{12}:oidc-provider/.+$'
+
+  OidcIssuerUrl:
+    Type: String
+    Description: OIDC issuer URL of the cluster (https://oidc.eks.<region>.amazonaws.com/id/<id>).
+
+  ControllerNamespace:
+    Type: String
+    Default: aws-application-networking-system
+    Description: Kubernetes namespace where the controller runs.
+
+  ControllerServiceAccount:
+    Type: String
+    Default: gateway-api-controller
+    Description: Kubernetes ServiceAccount the controller uses.
+
+Resources:
+  ControllerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-gwapi-ctrl-role-${ResourceSuffix}'
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OidcProviderArn}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${IssuerHost}:aud": "sts.amazonaws.com",
+                      "${IssuerHost}:sub": "system:serviceaccount:${Namespace}:${ServiceAccount}"
+                    }
+                  }
+                }
+              ]
+            }
+          - IssuerHost: !Select [ 1, !Split [ 'https://', !Ref OidcIssuerUrl ] ]
+            OidcProviderArn: !Ref OidcProviderArn
+            Namespace: !Ref ControllerNamespace
+            ServiceAccount: !Ref ControllerServiceAccount
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/VPCLatticeFullAccess
+      Policies:
+        - PolicyName: gwapi-controller-supplemental
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Tag-based discovery of VPC resources (subnets, SGs).
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeTags
+                  - ec2:DescribeSecurityGroups
+                Resource: '*'
+              # Lattice access logging to CloudWatch.
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:DescribeLogGroups
+                  - logs:DescribeResourcePolicies
+                  - logs:PutResourcePolicy
+                Resource: '*'
+              # Service-linked role for VPC Lattice (created on first use).
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: 'arn:aws:iam::*:role/aws-service-role/vpc-lattice.amazonaws.com/*'
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName: vpc-lattice.amazonaws.com
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-gwapi-ctrl-role-${ResourceSuffix}'
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  ControllerRoleArn:
+    Description: ARN to set on the controller ServiceAccount via eks.amazonaws.com/role-arn.
+    Value: !GetAtt ControllerRole.Arn
+
+  ControllerRoleName:
+    Value: !Ref ControllerRole
+
+  ControllerNamespace:
+    Value: !Ref ControllerNamespace
+
+  ControllerServiceAccount:
+    Value: !Ref ControllerServiceAccount
