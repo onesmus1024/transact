@@ -113,17 +113,21 @@ jobs:
                   ESO_ROLE=$(out ExternalSecretsRoleArn)
                   GWAPI_ROLE=$(out GatewayApiControllerRoleArn)
                   LATTICE_NET=$(out LatticeServiceNetworkId)
+                  VPC_ID=$(out VpcId)
+                  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-                  for v in CLUSTER ESO_ROLE GWAPI_ROLE LATTICE_NET; do
+                  for v in CLUSTER ESO_ROLE GWAPI_ROLE LATTICE_NET VPC_ID AWS_ACCOUNT_ID; do
                     if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then
                       echo "::error::CFN output for $v not found on stack $STACK_NAME"; exit 1
                     fi
                   done
 
-                  echo "cluster=$CLUSTER"           >> "$GITHUB_OUTPUT"
-                  echo "eso-role=$ESO_ROLE"         >> "$GITHUB_OUTPUT"
-                  echo "gwapi-role=$GWAPI_ROLE"     >> "$GITHUB_OUTPUT"
-                  echo "lattice-net=$LATTICE_NET"   >> "$GITHUB_OUTPUT"
+                  echo "cluster=$CLUSTER"               >> "$GITHUB_OUTPUT"
+                  echo "eso-role=$ESO_ROLE"             >> "$GITHUB_OUTPUT"
+                  echo "gwapi-role=$GWAPI_ROLE"         >> "$GITHUB_OUTPUT"
+                  echo "lattice-net=$LATTICE_NET"       >> "$GITHUB_OUTPUT"
+                  echo "vpc-id=$VPC_ID"                 >> "$GITHUB_OUTPUT"
+                  echo "account-id=$AWS_ACCOUNT_ID"     >> "$GITHUB_OUTPUT"
 
             - name: Install kubectl
               uses: azure/setup-kubectl@v4
@@ -160,6 +164,9 @@ jobs:
               env:
                   GWAPI_ROLE: ${{ steps.cfn.outputs.gwapi-role }}
                   LATTICE_NET: ${{ steps.cfn.outputs.lattice-net }}
+                  CLUSTER_NAME: ${{ steps.cfn.outputs.cluster }}
+                  CLUSTER_VPC_ID: ${{ steps.cfn.outputs.vpc-id }}
+                  AWS_ACCOUNT_ID: ${{ steps.cfn.outputs.account-id }}
                   GWAPI_VERSION: ${{ inputs.gwapi_version || env.GWAPI_VERSION_DEFAULT }}
               run: |
                   set -euo pipefail
@@ -174,6 +181,10 @@ jobs:
                   # Helm chart is published to a public ECR; no `helm repo add` needed.
                   # --skip-crds: chart bundles older Gateway API CRDs (v0.6.1) that
                   # would conflict with the v1.1.0 set we just applied.
+                  # awsRegion / clusterVpcId / clusterName / awsAccountId are
+                  # required: the chart maps them to the controller's REGION,
+                  # CLUSTER_VPC_ID, CLUSTER_NAME, AWS_ACCOUNT_ID env vars and
+                  # the controller crash-loops on startup if any are empty.
                   helm upgrade --install gateway-api-controller \
                     oci://public.ecr.aws/aws-application-networking-k8s/aws-gateway-controller-chart \
                     --version "$GWAPI_VERSION" \
@@ -181,6 +192,10 @@ jobs:
                     --skip-crds \
                     --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$GWAPI_ROLE" \
                     --set defaultServiceNetwork="$LATTICE_NET" \
+                    --set awsRegion="$AWS_REGION" \
+                    --set clusterVpcId="$CLUSTER_VPC_ID" \
+                    --set clusterName="$CLUSTER_NAME" \
+                    --set awsAccountId="$AWS_ACCOUNT_ID" \
                     --set log.level=info \
                     --wait --timeout 5m
 
