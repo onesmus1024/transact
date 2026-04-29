@@ -191,9 +191,14 @@ jobs:
           helm repo update
           # Pin chart version so we can't silently regress to a
           # pre-v2.13 controller that doesn't implement
-          # `gateway.k8s.aws/alb`. The two ALBGatewayAPI /
-          # NLBGatewayAPI feature gates flip Gateway API support
-          # on (off by default in v2.13).
+          # `gateway.k8s.aws/alb`. ALBGatewayAPI flips Gateway API
+          # support on (off by default in v2.13). NLBGatewayAPI is
+          # intentionally NOT enabled: it makes the controller watch
+          # TCPRoute / UDPRoute / TLSRoute, which only ship in the
+          # experimental channel of upstream Gateway API and are not
+          # in the standard-install.yaml we apply above. Enabling it
+          # without those CRDs crash-loops the controller on cache
+          # sync.
           helm upgrade --install aws-load-balancer-controller \
             eks/aws-load-balancer-controller \
             --namespace kube-system \
@@ -206,7 +211,6 @@ jobs:
             --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ALBCTRL_ROLE" \
             --set enableServiceMutatorWebhook=false \
             --set controllerConfig.featureGates.ALBGatewayAPI=true \
-            --set controllerConfig.featureGates.NLBGatewayAPI=true \
             --wait --timeout 5m
 
       - uses: actions/checkout@v4
