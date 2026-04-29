@@ -146,57 +146,7 @@ ci.yml ─▶ (success) ─▶ infra.yml ─▶ (success) ─▶ bootstrap.yml �
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  subgraph "GitHub"
-    REPO["Source repo"]
-    GH["GitHub Actions<br/>(ci · infra · bootstrap · cd)"]
-  end
-
-  subgraph "AWS account · us-east-1"
-    direction LR
-    ECR[("Amazon ECR<br/>(api/web images)")]
-    SM[("Secrets Manager<br/>RDS master creds")]
-
-    subgraph "VPC 10.20.0.0/16"
-      direction TB
-
-      subgraph "Public subnets (2 AZ)"
-        IGW[("Internet Gateway")]
-        NAT[("NAT Gateway")]
-        ALB(["Application<br/>Load Balancer"])
-      end
-
-      subgraph "Private subnets (2 AZ)"
-        subgraph "Amazon EKS"
-          ESO["External Secrets<br/>Operator"]
-          ALBCTRL["AWS Load Balancer<br/>Controller"]
-          API_POD["transact-api<br/>(2 replicas)"]
-          WEB_POD["transact-web<br/>(2 replicas)"]
-        end
-        RDS[("Amazon RDS<br/>PostgreSQL 16")]
-      end
-    end
-  end
-
-  USER(["End user"]) -- "HTTPS" --> ALB
-  ALB -- "/api/*" --> API_POD
-  ALB -- "/" --> WEB_POD
-
-  REPO --> GH
-  GH -- "build & push" --> ECR
-  GH -- "kubectl apply" --> API_POD
-  GH -- "kubectl apply" --> WEB_POD
-  GH -- "CloudFormation" --> RDS
-
-  API_POD -- "tcp/5432<br/>(SG ingress from VPC CIDR)" --> RDS
-  ESO -- "GetSecretValue<br/>(IRSA)" --> SM
-  ESO -- "renders<br/>connection string" --> API_POD
-  ALBCTRL -- "manages listeners/<br/>target groups (IRSA)" --> ALB
-
-  API_POD -- "image pull<br/>(via NAT)" --> NAT --> IGW
-  WEB_POD -- "image pull<br/>(via NAT)" --> NAT
-```
+![Transact architecture](transact-architecture.png)
 
 **Components & responsibilities**
 
