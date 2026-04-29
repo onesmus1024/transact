@@ -223,21 +223,6 @@ Resources:
           AccessScope:
             Type: cluster
 
-  # Always grant the account root principal cluster-admin so the console
-  # owner can inspect the cluster from the EKS console / kubectl, even
-  # if no AdminPrincipalArn is supplied. NOTE: prefer a dedicated IAM
-  # user/role for daily use and reserve root for break-glass only.
-  RootAccessEntry:
-    Type: AWS::EKS::AccessEntry
-    Properties:
-      ClusterName: !Ref Cluster
-      PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
-      Type: STANDARD
-      AccessPolicies:
-        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
-          AccessScope:
-            Type: cluster
-
   NodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:

@@ -132,6 +132,30 @@ jobs:
                     --name "${{ steps.cfn.outputs.cluster }}" \
                     --region "$AWS_REGION"
 
+            # Grant the operator IAM user cluster-admin via EKS Access
+            # Entries. Idempotent: ignores AlreadyExists / already-associated.
+            - name: Grant cluster-admin to operator IAM user
+              env:
+                  CLUSTER: ${{ steps.cfn.outputs.cluster }}
+                  ADMIN_PRINCIPAL: arn:aws:iam::633564234239:user/onesmus
+              run: |
+                  set -euo pipefail
+                  echo "Granting cluster-admin to $ADMIN_PRINCIPAL"
+
+                  aws eks create-access-entry \
+                    --cluster-name "$CLUSTER" \
+                    --principal-arn "$ADMIN_PRINCIPAL" \
+                    --region "$AWS_REGION" 2>&1 | tee /tmp/cae.log \
+                    || grep -qi "ResourceInUseException\|already exists" /tmp/cae.log
+
+                  aws eks associate-access-policy \
+                    --cluster-name "$CLUSTER" \
+                    --principal-arn "$ADMIN_PRINCIPAL" \
+                    --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+                    --access-scope type=cluster \
+                    --region "$AWS_REGION" 2>&1 | tee /tmp/aap.log \
+                    || grep -qi "already associated\|ResourceInUseException" /tmp/aap.log
+
             - name: Install / upgrade External Secrets Operator
               env:
                   ESO_ROLE: ${{ steps.cfn.outputs.eso-role }}
