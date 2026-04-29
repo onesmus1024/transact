@@ -99,7 +99,7 @@ jobs:
                   CLUSTER=$(out EksClusterName)
                   ESO_ROLE=$(out ExternalSecretsRoleArn)
                   GWAPI_ROLE=$(out GatewayApiControllerRoleArn)
-                  LATTICE_NET=$(out LatticeServiceNetworkId)
+                  LATTICE_NET=$(out LatticeServiceNetworkName)
                   VPC_ID=$(out VpcId)
                   AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 

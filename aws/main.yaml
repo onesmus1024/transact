@@ -436,6 +436,10 @@ Outputs:
     Export:
       Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-lattice-id-${ResourceSuffix}'
 
+  LatticeServiceNetworkName:
+    Description: VPC Lattice service network name (used as defaultServiceNetwork by the AWS Gateway API Controller).
+    Value: !GetAtt LatticeStack.Outputs.ServiceNetworkName
+
   LatticeServiceNetworkArn:
     Description: VPC Lattice service network ARN.
     Value: !GetAtt LatticeStack.Outputs.ServiceNetworkArn
