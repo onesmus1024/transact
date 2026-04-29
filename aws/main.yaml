@@ -239,7 +239,7 @@ Resources:
       TimeoutInMinutes: 10
       Tags:
         - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-secret-${ResourceSuffix}'
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-rds-creds-${ResourceSuffix}'
       Parameters:
         ProjectName: !Ref ProjectName
         EnvironmentName: !Ref EnvironmentName

@@ -215,8 +215,8 @@ jobs:
 
                   # Per-env Secrets Manager key (db-secret name follows the
                   # project naming convention).
-                  SECRET_KEY="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-rds-secret-${RESOURCE_SUFFIX}"
-                  sed -i "s|transact-dev-us-east-1-rds-secret-01|${SECRET_KEY}|g" \
+                  SECRET_KEY="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-rds-creds-${RESOURCE_SUFFIX}"
+                  sed -i "s|transact-dev-us-east-1-rds-creds-01|${SECRET_KEY}|g" \
                     .deploy/k8s/api/external-secret.yaml
 
                   echo "---- rendered api/deployment.yaml ----"
