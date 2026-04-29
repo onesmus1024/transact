@@ -114,7 +114,7 @@ Three GitHub Actions workflows live under [.github/workflows](.github/workflows)
 | Workflow | Trigger | Purpose |
 | --- | --- | --- |
 | [`ci.yml`](.github/workflows/ci.yml) | push / PR | Build + test the .NET solution and the Angular app on every branch. Fast feedback, no AWS access. |
-| [`infra.yml`](.github/workflows/infra.yml) | push to env branch (`develop`/`test`/`main`) under `aws/**`, or manual dispatch | Validates and deploys the CloudFormation root stack (`aws/main.yaml`) plus all nested stacks (VPC, security groups, ECR, RDS PostgreSQL, Secrets Manager, EKS, VPC Lattice, IRSA roles). |
+| [`infra.yml`](.github/workflows/infra.yml) | push to env branch (`develop`/`test`/`main`) under `aws/**`, or manual dispatch | Validates and deploys the CloudFormation root stack (`aws/main.yaml`) plus all nested stacks (VPC, security groups, ECR, RDS PostgreSQL, Secrets Manager, EKS, IRSA roles for ESO + AWS Load Balancer Controller). |
 | [`bootstrap.yml`](.github/workflows/bootstrap.yml) | auto after `infra.yml` succeeds (`workflow_run`), or manual dispatch | One-time per cluster (idempotent): installs External Secrets Operator and the AWS Gateway API Controller via Helm, wiring their ServiceAccounts to the IRSA roles created by CFN. |
 | [`cd.yml`](.github/workflows/cd.yml) | manual dispatch (push triggers commented out) | Builds and pushes the API + Web Docker images to ECR, then renders the K8s manifests (image tags, RDS endpoint, per-env Secrets Manager key) and `kubectl apply`s them to EKS. Waits for both Deployments to become Ready. |
 | [`rollback.yml`](.github/workflows/rollback.yml) | manual dispatch | Rolls a Deployment back to the previous revision. |
@@ -164,25 +164,24 @@ flowchart LR
       subgraph "Public subnets (2 AZ)"
         IGW[("Internet Gateway")]
         NAT[("NAT Gateway")]
+        ALB(["Application<br/>Load Balancer"])
       end
 
       subgraph "Private subnets (2 AZ)"
         subgraph "Amazon EKS"
           ESO["External Secrets<br/>Operator"]
-          GWAPI["AWS Gateway API<br/>Controller"]
+          ALBCTRL["AWS Load Balancer<br/>Controller"]
           API_POD["transact-api<br/>(2 replicas)"]
           WEB_POD["transact-web<br/>(2 replicas)"]
         end
         RDS[("Amazon RDS<br/>PostgreSQL 16")]
       end
-
-      LATTICE(["VPC Lattice<br/>service network"])
     end
   end
 
-  USER(["End user"]) -- "HTTPS" --> LATTICE
-  LATTICE -- "/api/*" --> API_POD
-  LATTICE -- "/" --> WEB_POD
+  USER(["End user"]) -- "HTTPS" --> ALB
+  ALB -- "/api/*" --> API_POD
+  ALB -- "/" --> WEB_POD
 
   REPO --> GH
   GH -- "build & push" --> ECR
@@ -193,7 +192,7 @@ flowchart LR
   API_POD -- "tcp/5432<br/>(SG ingress from VPC CIDR)" --> RDS
   ESO -- "GetSecretValue<br/>(IRSA)" --> SM
   ESO -- "renders<br/>connection string" --> API_POD
-  GWAPI -- "manages routes<br/>(IRSA)" --> LATTICE
+  ALBCTRL -- "manages listeners/<br/>target groups (IRSA)" --> ALB
 
   API_POD -- "image pull<br/>(via NAT)" --> NAT --> IGW
   WEB_POD -- "image pull<br/>(via NAT)" --> NAT
@@ -201,11 +200,11 @@ flowchart LR
 
 **Components & responsibilities**
 
-- **VPC + subnets** — two public subnets (NAT, future ALBs) and two private subnets (EKS nodes, RDS) across two AZs. NAT gateway provides egress for image pulls and the EKS control plane.
-- **EKS** — managed control plane with a managed node group; per-env sizing via the `EnvDefaults` mapping in [aws/compute/eks.yaml](aws/compute/eks.yaml). Core add-ons (vpc-cni, coredns, kube-proxy) installed via CFN; ESO + AWS Gateway API Controller installed by [bootstrap.yml](.github/workflows/bootstrap.yml) using IRSA.
+- **VPC + subnets** — two public subnets (NAT, public ALB) and two private subnets (EKS nodes, RDS) across two AZs. NAT gateway provides egress for image pulls and the EKS control plane.
+- **EKS** — managed control plane with a managed node group; per-env sizing via the `EnvDefaults` mapping in [aws/compute/eks.yaml](aws/compute/eks.yaml). Core add-ons (vpc-cni, coredns, kube-proxy) installed via CFN; ESO + AWS Load Balancer Controller installed by [bootstrap.yml](.github/workflows/bootstrap.yml) using IRSA.
 - **RDS PostgreSQL** — private-subnet DB instance, encrypted, security group allowing 5432 from inside the VPC only. Master credentials are auto-generated and stored in Secrets Manager via [aws/secrets/db-secret.yaml](aws/secrets/db-secret.yaml).
 - **External Secrets Operator** — runs in-cluster, assumes the IRSA role from [aws/compute/external-secrets.yaml](aws/compute/external-secrets.yaml), pulls the RDS master secret, and renders a `transact-db-connection` Kubernetes Secret with the full Npgsql connection string. The API consumes it via `ConnectionStrings__DefaultConnection`.
-- **VPC Lattice + Gateway API Controller** — the controller turns Kubernetes `Gateway` / `HTTPRoute` CRs into Lattice services automatically. The single `transact` Gateway routes `/api/*` (with prefix rewrite) to `transact-api` and everything else to `transact-web`.
+- **AWS Load Balancer Controller + Gateway API** — the controller (IRSA from [aws/compute/aws-lb-controller.yaml](aws/compute/aws-lb-controller.yaml), feature gate `ALBGatewayAPI` enabled) turns the `transact` Kubernetes `Gateway` + `HTTPRoute` CRs into a public ALB. `/api/*` routes (with prefix rewrite) to `transact-api`; everything else to `transact-web`.
 - **ECR** — single private repo per env (`transact-<env>-<region>-ecr-01`) shared by both images; tag prefix (`api-` vs `web-`) distinguishes them. Lifecycle policy retains the most recent N images per component.
 
 ## Assumptions
@@ -215,7 +214,7 @@ flowchart LR
 - **Branch-per-env model** — `develop` → dev, `test` → test, `main` → prod. No tag-based promotion.
 - **Trunk image on every push** — every CD run builds a fresh image; there is no manual "promote dev image to prod" step. For prod I would prefer promoting the exact dev artefact.
 - **Initial DB user is enough** — only the master user (created by `db-secret.yaml`) is wired up. A real deployment would create a less-privileged application role and have the API connect with that.
-- **Public Gateway by default** — the Lattice gateway and EKS API endpoint are publicly reachable for convenience. Production would lock both down (private endpoint, IP allow-list, AuthN via IAM SigV4).
+- **Public Gateway by default** — the ALB and EKS API endpoint are publicly reachable for convenience. Production would lock both down (private endpoint, IP allow-list, WAF / Shield on the ALB).
 - **GitHub OIDC role pre-exists** — `secrets.AWS_ROLE_TO_ASSUME` is configured manually outside this repo.
 - **Helm-managed cluster add-ons stay current** — chart versions are pinned in [bootstrap.yml](.github/workflows/bootstrap.yml) inputs; upgrades require re-running the workflow with a bumped version.
 
@@ -224,5 +223,5 @@ flowchart LR
 If I had another iteration:
 
 - **Replace `sed` templating with Helm or Kustomize overlays.** The `cd.yml` `sed` step is fragile (one missed placeholder = silent misconfiguration). A Helm chart per app with per-env `values-{dev,test,prod}.yaml` would make image tags, replicas, resource limits, and the Secrets Manager key first-class typed inputs and surface diffs cleanly. It would also let me run `helm diff` on PRs.
-- **Add an integration smoke test after rollout** — currently `cd.yml` only waits for `kubectl rollout status`. I'd add a step that hits `/health/ready` through the Lattice gateway (and a simple `POST /transactions` round-trip) and rolls back automatically on failure.
+- **Add an integration smoke test after rollout** — currently `cd.yml` only waits for `kubectl rollout status`. I'd add a step that hits `/health/ready` through the ALB (and a simple `POST /transactions` round-trip) and rolls back automatically on failure.
 - **Externalise non-secret RDS endpoint via a ConfigMap synced from CFN** — today the `dbHost` is `sed`-substituted at deploy time. A small reconciler (or `aws-cloudformation-stack-controller`) that mirrors stack outputs into a ConfigMap would make the endpoint visible to anything in-cluster without re-templating.

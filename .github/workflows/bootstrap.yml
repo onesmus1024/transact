@@ -3,12 +3,12 @@ name: Bootstrap cluster add-ons
 # One-time (idempotent) installation of in-cluster controllers that
 # CloudFormation cannot install:
 #   1. External Secrets Operator (ESO)
-#   2. AWS Gateway API Controller (VPC Lattice)
+#   2. Gateway API CRDs (upstream sigs.k8s.io/gateway-api)
+#   3. AWS Load Balancer Controller (ALB / NLB via Gateway API + Ingress)
 #
 # Pulls the IRSA role ARNs from the root CFN stack outputs:
-#   ExternalSecretsRoleArn          -> ESO ServiceAccount annotation
-#   GatewayApiControllerRoleArn     -> Gateway API Controller SA annotation
-#   LatticeServiceNetworkId         -> Default service network for the controller
+#   ExternalSecretsRoleArn  -> ESO ServiceAccount annotation
+#   AlbControllerRoleArn    -> AWS LBC ServiceAccount annotation
 #
 # Safe to re-run: each chart is `helm upgrade --install`.
 #
@@ -18,271 +18,237 @@ name: Bootstrap cluster add-ons
 #                       version bumps without redeploying infra).
 
 on:
-    workflow_call:
-        inputs:
-            target_env:
-                description: Target environment (dev|test|prod)
-                required: true
-                type: string
-            eso_version:
-                description: External Secrets Operator chart version
-                required: false
-                type: string
-                default: "0.10.4"
-            gwapi_version:
-                description: AWS Gateway API Controller chart version
-                required: false
-                type: string
-                default: "v1.0.7"
-        secrets:
-            AWS_ROLE_TO_ASSUME:
-                required: true
-    workflow_dispatch:
-        inputs:
-            environment:
-                description: Target environment
-                required: true
-                type: choice
-                options: [ dev, test, prod ]
-            eso_version:
-                description: External Secrets Operator chart version
-                required: false
-                default: "0.10.4"
-            gwapi_version:
-                description: AWS Gateway API Controller chart version
-                required: false
-                default: "v1.0.7"
+  workflow_call:
+    inputs:
+      target_env:
+        description: Target environment (dev|test|prod)
+        required: true
+        type: string
+      eso_version:
+        description: External Secrets Operator chart version
+        required: false
+        type: string
+        default: "0.10.4"
+      albctrl_version:
+        description: >-
+          AWS Load Balancer Controller chart version. Must be >=1.13.0
+          (controller v2.13.0+) for the `gateway.k8s.aws/alb` GatewayClass.
+        required: false
+        type: string
+        default: "1.13.0"
+    secrets:
+      AWS_ROLE_TO_ASSUME:
+        required: true
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [ dev, test, prod ]
+      eso_version:
+        description: External Secrets Operator chart version
+        required: false
+        default: "0.10.4"
+      albctrl_version:
+        description: >-
+          AWS Load Balancer Controller chart version (>=1.13.0 required for
+          Gateway API support).
+        required: false
+        default: "1.13.0"
 
 env:
-    AWS_REGION: us-east-1
-    PROJECT_NAME: transact
-    RESOURCE_SUFFIX: "01"
+  AWS_REGION: us-east-1
+  PROJECT_NAME: transact
+  RESOURCE_SUFFIX: "01"
 
 concurrency:
-    group: bootstrap-${{ inputs.target_env || inputs.environment }}
-    cancel-in-progress: false
+  group: bootstrap-${{ inputs.target_env || inputs.environment }}
+  cancel-in-progress: false
 
 jobs:
-    bootstrap:
-        name: Bootstrap · ${{ inputs.target_env || inputs.environment }}
-        runs-on: ubuntu-latest
-        environment:
-            name: ${{ inputs.target_env || inputs.environment }}
-        permissions:
-            contents: read
-            id-token: write # OIDC -> AWS
+  bootstrap:
+    name: Bootstrap · ${{ inputs.target_env || inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.target_env || inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # OIDC -> AWS
+    env:
+      TARGET_ENV: ${{ inputs.target_env || inputs.environment }}
+      STACK_NAME: transact-${{ inputs.target_env || inputs.environment}}-us-east-1-core-01
+    steps:
+      - name: Validate required configuration
+        run: |
+          if [ -z "${{ secrets.AWS_ROLE_TO_ASSUME }}" ]; then
+            echo "::error::Secret AWS_ROLE_TO_ASSUME is not set." ; exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve CFN outputs
+        id: cfn
+        run: |
+          set -euo pipefail
+          out() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          CLUSTER=$(out EksClusterName)
+          ESO_ROLE=$(out ExternalSecretsRoleArn)
+          ALBCTRL_ROLE=$(out AlbControllerRoleArn)
+          VPC_ID=$(out VpcId)
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          for v in CLUSTER ESO_ROLE ALBCTRL_ROLE VPC_ID AWS_ACCOUNT_ID; do
+            if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then
+              echo "::error::CFN output for $v not found on stack $STACK_NAME"; exit 1
+            fi
+          done
+
+          echo "cluster=$CLUSTER"               >> "$GITHUB_OUTPUT"
+          echo "eso-role=$ESO_ROLE"             >> "$GITHUB_OUTPUT"
+          echo "albctrl-role=$ALBCTRL_ROLE"     >> "$GITHUB_OUTPUT"
+          echo "vpc-id=$VPC_ID"                 >> "$GITHUB_OUTPUT"
+          echo "account-id=$AWS_ACCOUNT_ID"     >> "$GITHUB_OUTPUT"
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: latest
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ steps.cfn.outputs.cluster }}" \
+            --region "$AWS_REGION"
+
+      # Grant the operator IAM user cluster-admin via EKS Access
+      # Entries. Idempotent: ignores AlreadyExists / already-associated.
+      - name: Grant cluster-admin to operator IAM user
         env:
-            TARGET_ENV: ${{ inputs.target_env || inputs.environment }}
-            STACK_NAME: transact-${{ inputs.target_env ||
-                inputs.environment}}-us-east-1-core-01
-        steps:
-            - name: Validate required configuration
-              run: |
-                  if [ -z "${{ secrets.AWS_ROLE_TO_ASSUME }}" ]; then
-                    echo "::error::Secret AWS_ROLE_TO_ASSUME is not set." ; exit 1
-                  fi
+          CLUSTER: ${{ steps.cfn.outputs.cluster }}
+          ADMIN_PRINCIPAL: arn:aws:iam::633564234239:user/onesmus
+        run: |
+          set -euo pipefail
+          echo "Granting cluster-admin to $ADMIN_PRINCIPAL"
 
-            - name: Configure AWS credentials
-              uses: aws-actions/configure-aws-credentials@v4
-              with:
-                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-                  aws-region: ${{ env.AWS_REGION }}
+          aws eks create-access-entry \
+            --cluster-name "$CLUSTER" \
+            --principal-arn "$ADMIN_PRINCIPAL" \
+            --region "$AWS_REGION" 2>&1 | tee /tmp/cae.log \
+            || grep -qi "ResourceInUseException\|already exists" /tmp/cae.log
 
-            - name: Resolve CFN outputs
-              id: cfn
-              run: |
-                  set -euo pipefail
-                  out() {
-                    aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
-                      --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
-                  }
-                  CLUSTER=$(out EksClusterName)
-                  ESO_ROLE=$(out ExternalSecretsRoleArn)
-                  GWAPI_ROLE=$(out GatewayApiControllerRoleArn)
-                  ALBCTRL_ROLE=$(out AlbControllerRoleArn)
-                  LATTICE_NET=$(out LatticeServiceNetworkName)
-                  VPC_ID=$(out VpcId)
-                  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          aws eks associate-access-policy \
+            --cluster-name "$CLUSTER" \
+            --principal-arn "$ADMIN_PRINCIPAL" \
+            --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+            --access-scope type=cluster \
+            --region "$AWS_REGION" 2>&1 | tee /tmp/aap.log \
+            || grep -qi "already associated\|ResourceInUseException" /tmp/aap.log
 
-                  for v in CLUSTER ESO_ROLE GWAPI_ROLE ALBCTRL_ROLE LATTICE_NET VPC_ID AWS_ACCOUNT_ID; do
-                    if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then
-                      echo "::error::CFN output for $v not found on stack $STACK_NAME"; exit 1
-                    fi
-                  done
+      - name: Install / upgrade External Secrets Operator
+        env:
+          ESO_ROLE: ${{ steps.cfn.outputs.eso-role }}
+          ESO_VERSION: ${{ inputs.eso_version }}
+        run: |
+          set -euo pipefail
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            --namespace external-secrets --create-namespace \
+            --version "$ESO_VERSION" \
+            --set installCRDs=true \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ESO_ROLE" \
+            --wait --timeout 5m
+      - name: Install Gateway API CRDs (upstream)
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
 
-                  echo "cluster=$CLUSTER"               >> "$GITHUB_OUTPUT"
-                  echo "eso-role=$ESO_ROLE"             >> "$GITHUB_OUTPUT"
-                  echo "gwapi-role=$GWAPI_ROLE"         >> "$GITHUB_OUTPUT"
-                  echo "albctrl-role=$ALBCTRL_ROLE"     >> "$GITHUB_OUTPUT"
-                  echo "lattice-net=$LATTICE_NET"       >> "$GITHUB_OUTPUT"
-                  echo "vpc-id=$VPC_ID"                 >> "$GITHUB_OUTPUT"
-                  echo "account-id=$AWS_ACCOUNT_ID"     >> "$GITHUB_OUTPUT"
+      # AWS Load Balancer Controller — provisions public ALBs for
+      # Gateways with gatewayClassName: alb (and Ingresses with
+      # ingressClassName: alb). Required for serving the app on a
+      # public hostname like transact.ryansofttechnologies.com.
+      - name: Install / upgrade AWS Load Balancer Controller
+        env:
+          ALBCTRL_ROLE: ${{ steps.cfn.outputs.albctrl-role }}
+          CLUSTER_NAME: ${{ steps.cfn.outputs.cluster }}
+          CLUSTER_VPC_ID: ${{ steps.cfn.outputs.vpc-id }}
+          ALBCTRL_VERSION: ${{ inputs.albctrl_version }}
+        run: |
+          set -euo pipefail
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          # Pin chart version so we can't silently regress to a
+          # pre-v2.13 controller that doesn't implement
+          # `gateway.k8s.aws/alb`. The two ALBGatewayAPI /
+          # NLBGatewayAPI feature gates flip Gateway API support
+          # on (off by default in v2.13).
+          helm upgrade --install aws-load-balancer-controller \
+            eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --version "$ALBCTRL_VERSION" \
+            --set clusterName="$CLUSTER_NAME" \
+            --set region="$AWS_REGION" \
+            --set vpcId="$CLUSTER_VPC_ID" \
+            --set serviceAccount.create=true \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ALBCTRL_ROLE" \
+            --set enableServiceMutatorWebhook=false \
+            --set controllerConfig.featureGates.ALBGatewayAPI=true \
+            --set controllerConfig.featureGates.NLBGatewayAPI=true \
+            --wait --timeout 5m
 
-            - name: Install kubectl
-              uses: azure/setup-kubectl@v4
-              with:
-                  version: latest
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: k8s/bootstrap
 
-            - name: Install Helm
-              uses: azure/setup-helm@v4
-              with:
-                  version: latest
+      - name: Apply cluster-scoped GatewayClasses
+        run: |
+          set -euo pipefail
+          # Server-side apply so re-runs adopt the field-manager
+          # cleanly. GatewayClasses are shared across all apps.
+          kubectl apply --server-side --force-conflicts \
+            -f k8s/bootstrap/gatewayclass-alb.yaml
 
-            - name: Update kubeconfig
-              run: |
-                  aws eks update-kubeconfig \
-                    --name "${{ steps.cfn.outputs.cluster }}" \
-                    --region "$AWS_REGION"
+      - name: Verify controllers are running
+        run: |
+          set -euo pipefail
+          echo "---- ESO ----"
+          kubectl -n external-secrets get pods
+          kubectl -n external-secrets rollout status deployment/external-secrets --timeout=2m
+          kubectl -n external-secrets rollout status deployment/external-secrets-webhook --timeout=2m
+          kubectl -n external-secrets rollout status deployment/external-secrets-cert-controller --timeout=2m
 
-            # Grant the operator IAM user cluster-admin via EKS Access
-            # Entries. Idempotent: ignores AlreadyExists / already-associated.
-            - name: Grant cluster-admin to operator IAM user
-              env:
-                  CLUSTER: ${{ steps.cfn.outputs.cluster }}
-                  ADMIN_PRINCIPAL: arn:aws:iam::633564234239:user/onesmus
-              run: |
-                  set -euo pipefail
-                  echo "Granting cluster-admin to $ADMIN_PRINCIPAL"
+          echo "---- AWS Load Balancer Controller ----"
+          kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller
+          kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=3m
 
-                  aws eks create-access-entry \
-                    --cluster-name "$CLUSTER" \
-                    --principal-arn "$ADMIN_PRINCIPAL" \
-                    --region "$AWS_REGION" 2>&1 | tee /tmp/cae.log \
-                    || grep -qi "ResourceInUseException\|already exists" /tmp/cae.log
+          echo "---- GatewayClasses ----"
+          kubectl get gatewayclass -o wide || true
 
-                  aws eks associate-access-policy \
-                    --cluster-name "$CLUSTER" \
-                    --principal-arn "$ADMIN_PRINCIPAL" \
-                    --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
-                    --access-scope type=cluster \
-                    --region "$AWS_REGION" 2>&1 | tee /tmp/aap.log \
-                    || grep -qi "already associated\|ResourceInUseException" /tmp/aap.log
-
-            - name: Install / upgrade External Secrets Operator
-              env:
-                  ESO_ROLE: ${{ steps.cfn.outputs.eso-role }}
-                  ESO_VERSION: ${{ inputs.eso_version }}
-              run: |
-                  set -euo pipefail
-                  helm repo add external-secrets https://charts.external-secrets.io
-                  helm repo update
-                  helm upgrade --install external-secrets external-secrets/external-secrets \
-                    --namespace external-secrets --create-namespace \
-                    --version "$ESO_VERSION" \
-                    --set installCRDs=true \
-                    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ESO_ROLE" \
-                    --wait --timeout 5m
-            - name: Install Gateway API CRDs (upstream)
-              run: |
-                  kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.0/standard-install.yaml
-
-            - name: Install / upgrade AWS Gateway API Controller
-              env:
-                  GWAPI_ROLE: ${{ steps.cfn.outputs.gwapi-role }}
-                  LATTICE_NET: ${{ steps.cfn.outputs.lattice-net }}
-                  CLUSTER_NAME: ${{ steps.cfn.outputs.cluster }}
-                  CLUSTER_VPC_ID: ${{ steps.cfn.outputs.vpc-id }}
-                  AWS_ACCOUNT_ID: ${{ steps.cfn.outputs.account-id }}
-                  GWAPI_VERSION: ${{ inputs.gwapi_version }}
-              run: |
-                  set -euo pipefail
-                  # `helm upgrade --install` -> idempotent (this workflow can
-                  # be re-run safely).
-                  # `--skip-crds`              -> chart bundles older Gateway
-                  # API CRDs which would conflict with the upstream set we
-                  # just applied.
-                  # awsRegion / clusterVpcId / clusterName / awsAccountId
-                  # are required: the chart maps them to the controller's
-                  # REGION / CLUSTER_VPC_ID / CLUSTER_NAME / AWS_ACCOUNT_ID
-                  # env vars; the binary crash-loops if any are empty.
-                  helm upgrade --install gateway-api-controller \
-                    oci://public.ecr.aws/aws-application-networking-k8s/aws-gateway-controller-chart \
-                    --version "$GWAPI_VERSION" \
-                    --namespace aws-application-networking-system --create-namespace \
-                    --skip-crds \
-                    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$GWAPI_ROLE" \
-                    --set defaultServiceNetwork="$LATTICE_NET" \
-                    --set awsRegion="$AWS_REGION" \
-                    --set clusterVpcId="$CLUSTER_VPC_ID" \
-                    --set clusterName="$CLUSTER_NAME" \
-                    --set awsAccountId="$AWS_ACCOUNT_ID" \
-                    --set log.level=info \
-                    --wait --timeout 5m
-
-            # AWS Load Balancer Controller — provisions public ALBs for
-            # Gateways with gatewayClassName: alb (and Ingresses with
-            # ingressClassName: alb). Required for serving the app on a
-            # public hostname like transact.ryansofttechnologies.com.
-            - name: Install / upgrade AWS Load Balancer Controller
-              env:
-                  ALBCTRL_ROLE: ${{ steps.cfn.outputs.albctrl-role }}
-                  CLUSTER_NAME: ${{ steps.cfn.outputs.cluster }}
-                  CLUSTER_VPC_ID: ${{ steps.cfn.outputs.vpc-id }}
-              run: |
-                  set -euo pipefail
-                  helm repo add eks https://aws.github.io/eks-charts
-                  helm repo update
-                  helm upgrade --install aws-load-balancer-controller \
-                    eks/aws-load-balancer-controller \
-                    --namespace kube-system \
-                    --set clusterName="$CLUSTER_NAME" \
-                    --set region="$AWS_REGION" \
-                    --set vpcId="$CLUSTER_VPC_ID" \
-                    --set serviceAccount.create=true \
-                    --set serviceAccount.name=aws-load-balancer-controller \
-                    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ALBCTRL_ROLE" \
-                    --set enableServiceMutatorWebhook=false \
-                    --wait --timeout 5m
-
-            - uses: actions/checkout@v4
-              with:
-                  sparse-checkout: k8s/bootstrap
-
-            - name: Apply cluster-scoped GatewayClasses
-              run: |
-                  set -euo pipefail
-                  # Server-side apply so re-runs adopt the field-manager
-                  # cleanly. GatewayClasses are shared across all apps.
-                  kubectl apply --server-side --force-conflicts \
-                    -f k8s/bootstrap/gatewayclass.yaml
-                  kubectl apply --server-side --force-conflicts \
-                    -f k8s/bootstrap/gatewayclass-alb.yaml
-
-            - name: Verify controllers are running
-              run: |
-                  set -euo pipefail
-                  echo "---- ESO ----"
-                  kubectl -n external-secrets get pods
-                  kubectl -n external-secrets rollout status deployment/external-secrets --timeout=2m
-                  kubectl -n external-secrets rollout status deployment/external-secrets-webhook --timeout=2m
-                  kubectl -n external-secrets rollout status deployment/external-secrets-cert-controller --timeout=2m
-
-                  echo "---- Gateway API Controller (Lattice) ----"
-                  kubectl -n aws-application-networking-system get pods
-                  kubectl -n aws-application-networking-system rollout status \
-                    deployment/gateway-api-controller-aws-gateway-controller-chart --timeout=3m
-
-                  echo "---- AWS Load Balancer Controller ----"
-                  kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller
-                  kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=3m
-
-                  echo "---- GatewayClasses ----"
-                  kubectl get gatewayclass -o wide || true
-
-            - name: Diagnostics on failure
-              if: failure()
-              run: |
-                  echo "==== nodes ===="
-                  kubectl get nodes -o wide || true
-                  echo "==== aws-application-networking-system ===="
-                  kubectl -n aws-application-networking-system get all || true
-                  kubectl -n aws-application-networking-system describe pods || true
-                  kubectl -n aws-application-networking-system get events --sort-by=.lastTimestamp || true
-                  for p in $(kubectl -n aws-application-networking-system get pods -o name 2>/dev/null); do
-                    echo "---- $p ----"
-                    kubectl -n aws-application-networking-system logs "$p" --all-containers --tail=200 || true
-                    kubectl -n aws-application-networking-system logs "$p" --all-containers --previous --tail=100 2>/dev/null || true
-                  done
-                  echo "==== external-secrets ===="
-                  kubectl -n external-secrets get all || true
-                  kubectl -n external-secrets describe pods || true
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "==== nodes ===="
+          kubectl get nodes -o wide || true
+          echo "==== aws-load-balancer-controller ===="
+          kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller || true
+          kubectl -n kube-system describe pods -l app.kubernetes.io/name=aws-load-balancer-controller || true
+          for p in $(kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller -o name 2>/dev/null); do
+            echo "---- $p ----"
+            kubectl -n kube-system logs "$p" --all-containers --tail=200 || true
+          done
+          echo "==== external-secrets ===="
+          kubectl -n external-secrets get all || true
+          kubectl -n external-secrets describe pods || true

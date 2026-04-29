@@ -172,12 +172,6 @@ Parameters:
     Type: CommaDelimitedList
     Default: '0.0.0.0/0'
 
-  LatticeAuthType:
-    Type: String
-    Default: NONE
-    AllowedValues: [ NONE, AWS_IAM ]
-    Description: VPC Lattice service network auth mode.
-
 Resources:
   VpcStack:
     Type: AWS::CloudFormation::Stack
@@ -300,42 +294,6 @@ Resources:
         EndpointPrivateAccess: !Ref EksEndpointPrivateAccess
         PublicAccessCidrs: !Join [ ',', !Ref EksPublicAccessCidrs ]
 
-  LatticeStack:
-    Type: AWS::CloudFormation::Stack
-    DependsOn: VpcStack
-    Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/networking/lattice.yaml
-      TimeoutInMinutes: 15
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-lattice-${ResourceSuffix}'
-      Parameters:
-        ProjectName: !Ref ProjectName
-        EnvironmentName: !Ref EnvironmentName
-        RegionCode: !Ref RegionCode
-        ResourceSuffix: !Ref ResourceSuffix
-        VpcId: !GetAtt VpcStack.Outputs.VpcId
-        AuthType: !Ref LatticeAuthType
-
-  GatewayApiStack:
-    Type: AWS::CloudFormation::Stack
-    DependsOn:
-      - EksStack
-      - LatticeStack
-    Properties:
-      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/compute/gateway-api.yaml
-      TimeoutInMinutes: 10
-      Tags:
-        - Key: Name
-          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-gwapi-${ResourceSuffix}'
-      Parameters:
-        ProjectName: !Ref ProjectName
-        EnvironmentName: !Ref EnvironmentName
-        RegionCode: !Ref RegionCode
-        ResourceSuffix: !Ref ResourceSuffix
-        OidcProviderArn: !GetAtt EksStack.Outputs.OidcProviderArn
-        OidcIssuerUrl: !GetAtt EksStack.Outputs.OidcIssuerUrl
-
   EsoStack:
     Type: AWS::CloudFormation::Stack
     DependsOn: EksStack
@@ -446,26 +404,6 @@ Outputs:
     Value: !GetAtt EksStack.Outputs.OidcProviderArn
     Export:
       Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-oidc-arn-${ResourceSuffix}'
-
-  LatticeServiceNetworkId:
-    Description: VPC Lattice service network ID (set as gateway annotation).
-    Value: !GetAtt LatticeStack.Outputs.ServiceNetworkId
-    Export:
-      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-lattice-id-${ResourceSuffix}'
-
-  LatticeServiceNetworkName:
-    Description: VPC Lattice service network name (used as defaultServiceNetwork by the AWS Gateway API Controller).
-    Value: !GetAtt LatticeStack.Outputs.ServiceNetworkName
-
-  LatticeServiceNetworkArn:
-    Description: VPC Lattice service network ARN.
-    Value: !GetAtt LatticeStack.Outputs.ServiceNetworkArn
-
-  GatewayApiControllerRoleArn:
-    Description: IRSA role ARN for the AWS Gateway API Controller ServiceAccount.
-    Value: !GetAtt GatewayApiStack.Outputs.ControllerRoleArn
-    Export:
-      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-gwapi-role-arn-${ResourceSuffix}'
 
   ExternalSecretsRoleArn:
     Description: IRSA role ARN for the External Secrets Operator ServiceAccount.

@@ -20,6 +20,9 @@ metadata:
     # When the HTTPS listener is enabled below, force redirect.
     # alb.gateway.networking.k8s.aws/ssl-redirect: '443'
 spec:
+  # Gateway API support in AWS LBC is gated behind
+  # controllerConfig.featureGates.ALBGatewayAPI=true (set by
+  # .github/workflows/bootstrap.yml). Requires LBC chart >=1.13.0.
   gatewayClassName: alb
   listeners:
     - name: http
