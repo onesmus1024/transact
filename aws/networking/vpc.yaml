@@ -84,6 +84,9 @@ Resources:
           Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-subnet-pub1-${ResourceSuffix}'
         - Key: Tier
           Value: public
+        # AWS Load Balancer Controller subnet auto-discovery for public ALBs.
+        - Key: kubernetes.io/role/elb
+          Value: '1'
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -97,6 +100,8 @@ Resources:
           Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-subnet-pub2-${ResourceSuffix}'
         - Key: Tier
           Value: public
+        - Key: kubernetes.io/role/elb
+          Value: '1'
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -110,6 +115,9 @@ Resources:
           Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-subnet-prv1-${ResourceSuffix}'
         - Key: Tier
           Value: private
+        # Auto-discovery for internal LBs / pod target binding.
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -123,6 +131,8 @@ Resources:
           Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-subnet-prv2-${ResourceSuffix}'
         - Key: Tier
           Value: private
+        - Key: kubernetes.io/role/internal-elb
+          Value: '1'
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable

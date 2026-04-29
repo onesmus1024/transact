@@ -353,6 +353,23 @@ Resources:
         OidcProviderArn: !GetAtt EksStack.Outputs.OidcProviderArn
         OidcIssuerUrl: !GetAtt EksStack.Outputs.OidcIssuerUrl
 
+  AlbCtrlStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: EksStack
+    Properties:
+      TemplateURL: !Sub https://s3.${AWS::Region}.amazonaws.com/${TemplatesBucket}/${TemplatesPrefix}/compute/aws-lb-controller.yaml
+      TimeoutInMinutes: 10
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-albctrl-${ResourceSuffix}'
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EnvironmentName: !Ref EnvironmentName
+        RegionCode: !Ref RegionCode
+        ResourceSuffix: !Ref ResourceSuffix
+        OidcProviderArn: !GetAtt EksStack.Outputs.OidcProviderArn
+        OidcIssuerUrl: !GetAtt EksStack.Outputs.OidcIssuerUrl
+
 Outputs:
   VpcId:
     Description: VPC ID from the nested VPC stack.
@@ -455,3 +472,9 @@ Outputs:
     Value: !GetAtt EsoStack.Outputs.EsoRoleArn
     Export:
       Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eso-role-arn-${ResourceSuffix}'
+
+  AlbControllerRoleArn:
+    Description: IRSA role ARN for the AWS Load Balancer Controller ServiceAccount.
+    Value: !GetAtt AlbCtrlStack.Outputs.ControllerRoleArn
+    Export:
+      Name: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-albctrl-role-arn-${ResourceSuffix}'

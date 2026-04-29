@@ -1,27 +1,48 @@
-# Gateway API resources backed by AWS VPC Lattice. The cluster-scoped
-# GatewayClass `amazon-vpc-lattice` is applied by the bootstrap workflow
-# (see k8s/bootstrap/gatewayclass.yaml) — not here, because it is shared
-# across all apps and managed alongside the controller install.
-# One Gateway per app; Lattice provisions the underlying service-network
-# listener + service automatically.
+# Public ALB Gateway provisioned by the AWS Load Balancer Controller.
+# The controller creates an internet-facing ALB; point a CNAME from
+# transact.ryansofttechnologies.com (Namecheap) at the ALB DNS name
+# emitted in `kubectl get gateway transact -o yaml` (.status.addresses).
+#
+# Once an ACM certificate for transact.ryansofttechnologies.com exists,
+# uncomment the HTTPS listener block below and put the cert ARN in the
+# listener TLS options.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: transact
   namespace: transact
+  annotations:
+    # Public ALB. Use 'internal' for VPC-only.
+    alb.gateway.networking.k8s.aws/scheme: internet-facing
+    # Register pods directly (vs node-port). Required when target pods
+    # use the AWS VPC CNI (default on EKS).
+    alb.gateway.networking.k8s.aws/target-type: ip
+    # When the HTTPS listener is enabled below, force redirect.
+    # alb.gateway.networking.k8s.aws/ssl-redirect: '443'
 spec:
-  gatewayClassName: amazon-vpc-lattice
+  gatewayClassName: alb
   listeners:
     - name: http
       protocol: HTTP
       port: 80
+      hostname: transact.ryansofttechnologies.com
       allowedRoutes:
         namespaces:
           from: Same
+    # --- Enable once ACM cert is issued -------------------------------
+    # - name: https
+    #   protocol: HTTPS
+    #   port: 443
+    #   hostname: transact.ryansofttechnologies.com
+    #   tls:
+    #     mode: Terminate
+    #     options:
+    #       alb.gateway.networking.k8s.aws/certificate-arns: arn:aws:acm:us-east-1:633564234239:certificate/REPLACE_ME
+    #   allowedRoutes:
+    #     namespaces:
+    #       from: Same
 ---
-# /api/* and friends route to the API after stripping the /api prefix.
-# The API endpoints are at /transactions, /health, /swagger (no /api),
-# so URLRewrite ReplacePrefixMatch("/") gives the upstream path.
+# /api/* -> API service (strip /api prefix to match upstream paths).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -31,6 +52,8 @@ spec:
   parentRefs:
     - name: transact
       sectionName: http
+  hostnames:
+    - transact.ryansofttechnologies.com
   rules:
     - matches:
         - path:
@@ -58,6 +81,7 @@ spec:
           port: 80
           weight: 1
 ---
+# Everything else -> web (Angular SPA).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -67,6 +91,8 @@ spec:
   parentRefs:
     - name: transact
       sectionName: http
+  hostnames:
+    - transact.ryansofttechnologies.com
   rules:
     - matches:
         - path:

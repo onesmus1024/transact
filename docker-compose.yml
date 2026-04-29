@@ -36,7 +36,11 @@ services:
         condition: service_healthy
     expose:
       - "8080"
-    networks: [ transact-net ]
+    networks:
+      transact-net:
+        # Aliased so the web nginx reverse-proxy can use the same
+        # hostname (`transact-api`) it uses in Kubernetes.
+        aliases: [ transact-api ]
 
   web:
     build:

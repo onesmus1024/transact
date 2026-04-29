@@ -99,11 +99,12 @@ jobs:
                   CLUSTER=$(out EksClusterName)
                   ESO_ROLE=$(out ExternalSecretsRoleArn)
                   GWAPI_ROLE=$(out GatewayApiControllerRoleArn)
+                  ALBCTRL_ROLE=$(out AlbControllerRoleArn)
                   LATTICE_NET=$(out LatticeServiceNetworkName)
                   VPC_ID=$(out VpcId)
                   AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
-                  for v in CLUSTER ESO_ROLE GWAPI_ROLE LATTICE_NET VPC_ID AWS_ACCOUNT_ID; do
+                  for v in CLUSTER ESO_ROLE GWAPI_ROLE ALBCTRL_ROLE LATTICE_NET VPC_ID AWS_ACCOUNT_ID; do
                     if [ -z "${!v}" ] || [ "${!v}" = "None" ]; then
                       echo "::error::CFN output for $v not found on stack $STACK_NAME"; exit 1
                     fi
@@ -112,6 +113,7 @@ jobs:
                   echo "cluster=$CLUSTER"               >> "$GITHUB_OUTPUT"
                   echo "eso-role=$ESO_ROLE"             >> "$GITHUB_OUTPUT"
                   echo "gwapi-role=$GWAPI_ROLE"         >> "$GITHUB_OUTPUT"
+                  echo "albctrl-role=$ALBCTRL_ROLE"     >> "$GITHUB_OUTPUT"
                   echo "lattice-net=$LATTICE_NET"       >> "$GITHUB_OUTPUT"
                   echo "vpc-id=$VPC_ID"                 >> "$GITHUB_OUTPUT"
                   echo "account-id=$AWS_ACCOUNT_ID"     >> "$GITHUB_OUTPUT"
@@ -207,17 +209,44 @@ jobs:
                     --set log.level=info \
                     --wait --timeout 5m
 
+            # AWS Load Balancer Controller — provisions public ALBs for
+            # Gateways with gatewayClassName: alb (and Ingresses with
+            # ingressClassName: alb). Required for serving the app on a
+            # public hostname like transact.ryansofttechnologies.com.
+            - name: Install / upgrade AWS Load Balancer Controller
+              env:
+                  ALBCTRL_ROLE: ${{ steps.cfn.outputs.albctrl-role }}
+                  CLUSTER_NAME: ${{ steps.cfn.outputs.cluster }}
+                  CLUSTER_VPC_ID: ${{ steps.cfn.outputs.vpc-id }}
+              run: |
+                  set -euo pipefail
+                  helm repo add eks https://aws.github.io/eks-charts
+                  helm repo update
+                  helm upgrade --install aws-load-balancer-controller \
+                    eks/aws-load-balancer-controller \
+                    --namespace kube-system \
+                    --set clusterName="$CLUSTER_NAME" \
+                    --set region="$AWS_REGION" \
+                    --set vpcId="$CLUSTER_VPC_ID" \
+                    --set serviceAccount.create=true \
+                    --set serviceAccount.name=aws-load-balancer-controller \
+                    --set serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="$ALBCTRL_ROLE" \
+                    --set enableServiceMutatorWebhook=false \
+                    --wait --timeout 5m
+
             - uses: actions/checkout@v4
               with:
                   sparse-checkout: k8s/bootstrap
 
-            - name: Apply cluster-scoped GatewayClass
+            - name: Apply cluster-scoped GatewayClasses
               run: |
                   set -euo pipefail
                   # Server-side apply so re-runs adopt the field-manager
-                  # cleanly. The GatewayClass is shared across all apps.
+                  # cleanly. GatewayClasses are shared across all apps.
                   kubectl apply --server-side --force-conflicts \
                     -f k8s/bootstrap/gatewayclass.yaml
+                  kubectl apply --server-side --force-conflicts \
+                    -f k8s/bootstrap/gatewayclass-alb.yaml
 
             - name: Verify controllers are running
               run: |
@@ -228,13 +257,17 @@ jobs:
                   kubectl -n external-secrets rollout status deployment/external-secrets-webhook --timeout=2m
                   kubectl -n external-secrets rollout status deployment/external-secrets-cert-controller --timeout=2m
 
-                  echo "---- Gateway API Controller ----"
+                  echo "---- Gateway API Controller (Lattice) ----"
                   kubectl -n aws-application-networking-system get pods
                   kubectl -n aws-application-networking-system rollout status \
                     deployment/gateway-api-controller-aws-gateway-controller-chart --timeout=3m
 
-                  echo "---- GatewayClass ----"
-                  kubectl get gatewayclass amazon-vpc-lattice -o wide || true
+                  echo "---- AWS Load Balancer Controller ----"
+                  kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller
+                  kubectl -n kube-system rollout status deployment/aws-load-balancer-controller --timeout=3m
+
+                  echo "---- GatewayClasses ----"
+                  kubectl get gatewayclass -o wide || true
 
             - name: Diagnostics on failure
               if: failure()
