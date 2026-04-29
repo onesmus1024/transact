@@ -14,10 +14,10 @@ name: Deploy infrastructure
 
 on:
   # push:
-    # branches: [ main, master, test, develop ]
-    # paths:
-    #   - "aws/**"
-    #   - ".github/workflows/infra.yml"
+  # branches: [ main, master, test, develop ]
+  # paths:
+  #   - "aws/**"
+  #   - ".github/workflows/infra.yml"
   workflow_dispatch:
     inputs:
       environment:
