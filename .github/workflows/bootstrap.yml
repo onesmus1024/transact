@@ -11,15 +11,32 @@ name: Bootstrap cluster add-ons
 #   LatticeServiceNetworkId         -> Default service network for the controller
 #
 # Safe to re-run: each chart is `helm upgrade --install`.
+#
+# Triggers:
+#   - workflow_call:    invoked by infra.yml after CFN deploy succeeds.
+#   - workflow_dispatch: manual run (also useful for re-bootstrap / chart
+#                       version bumps without redeploying infra).
 
 on:
-    # Auto-run after the infra workflow succeeds. Resolves the target env
-    # from the head branch of that run (same branch->env mapping as the
-    # infra and cd workflows).
-    workflow_run:
-        workflows: [ "Deploy infrastructure" ]
-        types: [ completed ]
-        branches: [ main, master, test, develop ]
+    workflow_call:
+        inputs:
+            target_env:
+                description: Target environment (dev|test|prod)
+                required: true
+                type: string
+            eso_version:
+                description: External Secrets Operator chart version
+                required: false
+                type: string
+                default: "0.10.4"
+            gwapi_version:
+                description: AWS Gateway API Controller chart version
+                required: false
+                type: string
+                default: "v1.0.7"
+        secrets:
+            AWS_ROLE_TO_ASSUME:
+                required: true
     workflow_dispatch:
         inputs:
             environment:
@@ -40,54 +57,23 @@ env:
     AWS_REGION: us-east-1
     PROJECT_NAME: transact
     RESOURCE_SUFFIX: "01"
-    # Defaults are also referenced when triggered via workflow_run (no inputs).
-    ESO_VERSION_DEFAULT: "0.10.4"
-    GWAPI_VERSION_DEFAULT: "v1.0.7"
 
 concurrency:
-    group: bootstrap-${{ inputs.environment || github.event.workflow_run.head_branch
-        }}
+    group: bootstrap-${{ inputs.target_env || inputs.environment }}
     cancel-in-progress: false
 
 jobs:
-    resolve:
-        name: Resolve environment
-        runs-on: ubuntu-latest
-        # Skip when the upstream infra run failed or was cancelled.
-        if: >-
-            github.event_name == 'workflow_dispatch' ||
-            github.event.workflow_run.conclusion == 'success'
-        outputs:
-            target-env: ${{ steps.env.outputs.env }}
-        steps:
-            - id: env
-              env:
-                  DISPATCH_ENV: ${{ inputs.environment }}
-                  BRANCH: ${{ github.event.workflow_run.head_branch }}
-              run: |
-                  if [ -n "$DISPATCH_ENV" ]; then
-                    echo "env=$DISPATCH_ENV" >> "$GITHUB_OUTPUT"
-                  else
-                    case "$BRANCH" in
-                      develop)     echo "env=dev"  >> "$GITHUB_OUTPUT" ;;
-                      test)        echo "env=test" >> "$GITHUB_OUTPUT" ;;
-                      main|master) echo "env=prod" >> "$GITHUB_OUTPUT" ;;
-                      *) echo "::error::Branch $BRANCH is not mapped to an environment." ; exit 1 ;;
-                    esac
-                  fi
-
     bootstrap:
-        name: Bootstrap · ${{ needs.resolve.outputs.target-env }}
-        needs: resolve
+        name: Bootstrap · ${{ inputs.target_env || inputs.environment }}
         runs-on: ubuntu-latest
         environment:
-            name: ${{ needs.resolve.outputs.target-env }}
+            name: ${{ inputs.target_env || inputs.environment }}
         permissions:
             contents: read
             id-token: write # OIDC -> AWS
         env:
-            TARGET_ENV: ${{ needs.resolve.outputs.target-env }}
-            STACK_NAME: transact-${{ needs.resolve.outputs.target-env }}-us-east-1-core-01
+            TARGET_ENV: ${{ inputs.target_env || inputs.environment }}
+            STACK_NAME: transact-${{ inputs.target_env || inputs.environment }}-us-east-1-core-01
         steps:
             - name: Validate required configuration
               run: |
@@ -148,7 +134,7 @@ jobs:
             - name: Install / upgrade External Secrets Operator
               env:
                   ESO_ROLE: ${{ steps.cfn.outputs.eso-role }}
-                  ESO_VERSION: ${{ inputs.eso_version || env.ESO_VERSION_DEFAULT }}
+                  ESO_VERSION: ${{ inputs.eso_version }}
               run: |
                   set -euo pipefail
                   helm repo add external-secrets https://charts.external-secrets.io
@@ -167,7 +153,7 @@ jobs:
                   CLUSTER_NAME: ${{ steps.cfn.outputs.cluster }}
                   CLUSTER_VPC_ID: ${{ steps.cfn.outputs.vpc-id }}
                   AWS_ACCOUNT_ID: ${{ steps.cfn.outputs.account-id }}
-                  GWAPI_VERSION: ${{ inputs.gwapi_version || env.GWAPI_VERSION_DEFAULT }}
+                  GWAPI_VERSION: ${{ inputs.gwapi_version }}
               run: |
                   set -euo pipefail
                   # The controller needs the upstream Gateway API CRDs installed

@@ -191,3 +191,19 @@ jobs:
             --stack-name "${STACK_PREFIX}-${TARGET_ENV}-${AWS_REGION}-core-${RESOURCE_SUFFIX}" \
             --query 'Stacks[0].Outputs' \
             --output table
+
+  # Install in-cluster controllers (ESO + AWS Gateway API Controller) once
+  # the CFN stack is up. Runs in the same workflow so a failed bootstrap
+  # surfaces directly on the infra run instead of in a separately-tracked
+  # workflow_run.
+  bootstrap:
+    name: Bootstrap cluster add-ons
+    needs: [ resolve, deploy ]
+    uses: ./.github/workflows/bootstrap.yml
+    with:
+      target_env: ${{ needs.resolve.outputs.target-env }}
+    secrets:
+      AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+    permissions:
+      contents: read
+      id-token: write
