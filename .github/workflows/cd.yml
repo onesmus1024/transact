@@ -223,6 +223,14 @@ jobs:
                   echo "---- rendered external-secret.yaml ----"
                   grep -E '^\s*key:' .deploy/k8s/api/external-secret.yaml
 
+            - name: Delete old resources (ignore not-found errors)
+              run: |
+                  set -euo pipefail
+                  kubectl delete -f .deploy/k8s/api/deployment.yaml --ignore-not-found
+                  kubectl delete -f .deploy/k8s/web/deployment.yaml --ignore-not-found
+                  kubectl delete -f .deploy/k8s/gateway/gateway.yaml --ignore-not-found
+                  # Services and Gateway are cluster-scoped, so we don't delete/recreate them on deploy to avoid potential conflicts with other envs.
+
             - name: Apply manifests
               run: |
                   set -euo pipefail
