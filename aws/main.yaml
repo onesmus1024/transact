@@ -172,14 +172,6 @@ Parameters:
     Type: CommaDelimitedList
     Default: '0.0.0.0/0'
 
-  EksAdminPrincipalArn:
-    Type: String
-    Default: ''
-    Description: >
-      Optional IAM principal ARN granted cluster-admin via an EKS Access
-      Entry (in addition to the stack creator). Set this to the GitHub
-      Actions OIDC role ARN so the deploy workflow can run kubectl.
-
   LatticeAuthType:
     Type: String
     Default: NONE
@@ -307,7 +299,6 @@ Resources:
         EndpointPublicAccess: !Ref EksEndpointPublicAccess
         EndpointPrivateAccess: !Ref EksEndpointPrivateAccess
         PublicAccessCidrs: !Join [ ',', !Ref EksPublicAccessCidrs ]
-        AdminPrincipalArn: !Ref EksAdminPrincipalArn
 
   LatticeStack:
     Type: AWS::CloudFormation::Stack

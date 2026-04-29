@@ -162,20 +162,6 @@ jobs:
             fi
           done
 
-      - name: Resolve OIDC role ARN for EKS access entry
-        id: oidc
-        run: |
-          # The role currently assumed by this workflow (via OIDC). Pass
-          # it to the EKS stack so it gets cluster-admin via Access
-          # Entries; otherwise the bootstrap/cd workflows can't run
-          # kubectl against the new cluster.
-          ARN=$(aws sts get-caller-identity --query Arn --output text)
-          # `arn:aws:sts::123:assumed-role/<RoleName>/<session>` -> role ARN
-          ROLE_ARN=$(echo "$ARN" | sed -E 's|sts::([0-9]+):assumed-role/([^/]+)/.*|iam::\1:role/\2|')
-          ROLE_ARN="arn:aws:${ROLE_ARN}"
-          echo "role-arn=$ROLE_ARN" >> "$GITHUB_OUTPUT"
-          echo "Granting cluster-admin via Access Entry to: $ROLE_ARN"
-
       - name: Deploy  stack
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
@@ -197,8 +183,7 @@ jobs:
             ResourceSuffix=${{ env.RESOURCE_SUFFIX }}, TemplatesBucket=${{
             steps.bucket.outputs.name }}, TemplatesPrefix=${{
             env.TEMPLATES_PREFIX }}, CreateNatGateway=${{ env.CREATE_NAT_GATEWAY
-            }}, MultiAzNat=${{ env.MULTI_AZ_NAT }}, EksAdminPrincipalArn=${{
-            steps.oidc.outputs.role-arn }}
+            }}, MultiAzNat=${{ env.MULTI_AZ_NAT }}
 
       - name: Show stack outputs
         run: |
