@@ -73,8 +73,7 @@ jobs:
             id-token: write # OIDC -> AWS
         env:
             TARGET_ENV: ${{ inputs.target_env || inputs.environment }}
-            STACK_NAME: transact-${{ inputs.target_env || inputs.environment
-                }}-us-east-1-core-01
+            STACK_NAME: transact-${{ inputs.target_env || inputs.environment}}-us-east-1-core-01
         steps:
             - name: Validate required configuration
               run: |

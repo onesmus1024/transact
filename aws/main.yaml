@@ -135,7 +135,7 @@ Parameters:
 
   EksKubernetesVersion:
     Type: String
-    Default: '1.31'
+    Default: '1.34'
 
   EksNodeInstanceType:
     Type: String
