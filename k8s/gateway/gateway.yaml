@@ -1,7 +1,9 @@
-# Gateway API resources backed by AWS VPC Lattice (amazon-vpc-lattice
-# GatewayClass, installed by the AWS Gateway API Controller deployed via
-# aws/compute/gateway-api.yaml). One Gateway per app; Lattice provisions
-# the underlying service-network listener + service automatically.
+# Gateway API resources backed by AWS VPC Lattice. The cluster-scoped
+# GatewayClass `amazon-vpc-lattice` is applied by the bootstrap workflow
+# (see k8s/bootstrap/gatewayclass.yaml) — not here, because it is shared
+# across all apps and managed alongside the controller install.
+# One Gateway per app; Lattice provisions the underlying service-network
+# listener + service automatically.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:

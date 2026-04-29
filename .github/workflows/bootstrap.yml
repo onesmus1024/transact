@@ -73,7 +73,8 @@ jobs:
             id-token: write # OIDC -> AWS
         env:
             TARGET_ENV: ${{ inputs.target_env || inputs.environment }}
-            STACK_NAME: transact-${{ inputs.target_env || inputs.environment}}-us-east-1-core-01
+            STACK_NAME: transact-${{ inputs.target_env ||
+                inputs.environment}}-us-east-1-core-01
         steps:
             - name: Validate required configuration
               run: |
@@ -181,6 +182,18 @@ jobs:
                     --set awsAccountId="$AWS_ACCOUNT_ID" \
                     --set log.level=info \
                     --wait --timeout 5m
+
+            - uses: actions/checkout@v4
+              with:
+                  sparse-checkout: k8s/bootstrap
+
+            - name: Apply cluster-scoped GatewayClass
+              run: |
+                  set -euo pipefail
+                  # Server-side apply so re-runs adopt the field-manager
+                  # cleanly. The GatewayClass is shared across all apps.
+                  kubectl apply --server-side --force-conflicts \
+                    -f k8s/bootstrap/gatewayclass.yaml
 
             - name: Verify controllers are running
               run: |
