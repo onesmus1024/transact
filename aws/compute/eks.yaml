@@ -83,11 +83,22 @@ Parameters:
     Default: '0.0.0.0/0'
     Description: CIDRs allowed to hit the public API endpoint when enabled.
 
+  AdminPrincipalArn:
+    Type: String
+    Default: ''
+    Description: >
+      Optional IAM principal ARN (user or role) to grant cluster-admin
+      via an EKS Access Entry. The stack creator gets admin automatically
+      via BootstrapClusterCreatorAdminPermissions; set this to grant one
+      additional principal (typically the GitHub Actions OIDC role, so
+      the deploy workflow can run kubectl). Leave empty to skip.
+
 Conditions:
   UseAutoInstanceType: !Equals [ !Ref NodeInstanceType, 'auto' ]
   UseAutoDesired:      !Equals [ !Ref NodeDesiredSize, 0 ]
   UseAutoMin:          !Equals [ !Ref NodeMinSize, 0 ]
   UseAutoMax:          !Equals [ !Ref NodeMaxSize, 0 ]
+  HasAdminPrincipal:   !Not [ !Equals [ !Ref AdminPrincipalArn, '' ] ]
 
 Mappings:
   EnvDefaults:
@@ -196,6 +207,36 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub '${ProjectName}-${EnvironmentName}-${RegionCode}-eks-oidc-${ResourceSuffix}'
+
+  # Optional: grant one extra IAM principal (e.g. the GitHub Actions OIDC
+  # role) cluster-admin via EKS Access Entries. Created only when
+  # AdminPrincipalArn is non-empty.
+  AdminAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Condition: HasAdminPrincipal
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref AdminPrincipalArn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+
+  # Always grant the account root principal cluster-admin so the console
+  # owner can inspect the cluster from the EKS console / kubectl, even
+  # if no AdminPrincipalArn is supplied. NOTE: prefer a dedicated IAM
+  # user/role for daily use and reserve root for break-glass only.
+  RootAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
 
   NodeGroup:
     Type: AWS::EKS::Nodegroup
