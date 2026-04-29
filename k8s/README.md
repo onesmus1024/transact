@@ -1,8 +1,10 @@
 # Transact Kubernetes manifests
 
 Plain manifests for deploying Transact to the EKS cluster created by
-`aws/compute/eks.yaml`, with routing via the AWS Gateway API Controller
-(VPC Lattice) installed per `aws/compute/gateway-api.yaml`.
+`aws/compute/eks.yaml`. Public traffic is fronted by an ALB provisioned
+by the AWS Load Balancer Controller via the Gateway API
+(`gatewayClassName: alb`); IRSA for the controller comes from
+`aws/compute/aws-lb-controller.yaml`.
 
 ## Layout
 
@@ -19,7 +21,7 @@ k8s/
     deployment.yaml             # Angular SPA served by nginx (Transact.Web)
     service.yaml
   gateway/
-    gateway.yaml                # Gateway + HTTPRoutes (amazon-vpc-lattice)
+    gateway.yaml                # Gateway + HTTPRoutes (alb GatewayClass)
 ```
 
 ## Apply order
@@ -61,10 +63,11 @@ kubectl apply -f k8s/api/cluster-secret-store.yaml
 # 4. Services
 kubectl apply -f k8s/api/service.yaml -f k8s/web/service.yaml
 
-# 5. Gateway + routes (Lattice provisions the underlying service network resources)
+# 5. Gateway + routes (AWS LBC provisions a public ALB)
 kubectl apply -f k8s/gateway/gateway.yaml
 
-# 6. Get the assigned DNS name from the Gateway status (Lattice generates it)
+# 6. Get the assigned ALB DNS name from the Gateway status, then CNAME
+#    transact.ryansofttechnologies.com -> this value at Namecheap.
 kubectl -n transact get gateway transact -o jsonpath='{.status.addresses[0].value}'
 ```
 
