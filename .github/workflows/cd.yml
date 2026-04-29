@@ -9,8 +9,6 @@ name: Deploy
 # Approval gates come from GitHub Environments (Settings -> Environments).
 
 on:
-    # push:
-    #     branches: [ main, master, test, develop ]
     workflow_dispatch:
         inputs:
             environment:
@@ -211,14 +209,11 @@ jobs:
                   sed -i "s|REPLACE_ME_API_IMAGE|${API_IMAGE}|g" .deploy/k8s/api/deployment.yaml
                   sed -i "s|REPLACE_ME_WEB_IMAGE|${WEB_IMAGE}|g" .deploy/k8s/web/deployment.yaml
 
-                  # DB host (and namespace-suffix env keys) for ESO.
-                  sed -i "s|REPLACE_ME_DB_HOST|${{ steps.cfn.outputs.db-host }}|g" \
-                    .deploy/k8s/api/external-secret.yaml
-
                   # Per-env Secrets Manager key (db-secret name follows the
-                  # project naming convention).
-                  SECRET_KEY="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-rds-secret-${RESOURCE_SUFFIX}"
-                  sed -i "s|transact-dev-us-east-1-rds-secret-01|${SECRET_KEY}|g" \
+                  # project naming convention). host/port/dbname now come
+                  # from the secret itself, so no DB host substitution.
+                  SECRET_KEY="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-rds-creds-${RESOURCE_SUFFIX}"
+                  sed -i "s|transact-dev-us-east-1-rds-creds-01|${SECRET_KEY}|g" \
                     .deploy/k8s/api/external-secret.yaml
 
                   echo "---- rendered api/deployment.yaml ----"
@@ -226,7 +221,14 @@ jobs:
                   echo "---- rendered web/deployment.yaml ----"
                   grep -E '^\s*image:' .deploy/k8s/web/deployment.yaml
                   echo "---- rendered external-secret.yaml ----"
-                  grep -E '^\s*(dbHost|key):' .deploy/k8s/api/external-secret.yaml
+                  grep -E '^\s*key:' .deploy/k8s/api/external-secret.yaml
+
+            - name: Delete old resources (ignore not-found errors)
+              run: |
+                  set -euo pipefail
+                  kubectl delete -f .deploy/k8s/api/deployment.yaml --ignore-not-found
+                  kubectl delete -f .deploy/k8s/web/deployment.yaml --ignore-not-found
+
 
             - name: Apply manifests
               run: |
