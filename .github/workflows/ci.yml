@@ -7,11 +7,7 @@ name: Lint & Test
 
 on:
     pull_request:
-        branches: [ main, master, test, develop ]
-    push:
-        branches: [ main, master, test, develop ]
-        paths-ignore:
-            - '**/*.md'
+        branches: [ master, test, develop ]
     workflow_dispatch:
 
 env:
@@ -62,11 +58,8 @@ jobs:
               working-directory: Transact.Web
               shell: bash
               run: |
-                  if npm run | grep -qE '^\s*lint'; then
                     npm run lint
-                  else
-                    echo "No lint script — skipping."
-                  fi
+              
 
     test:
         name: Test (backend + frontend)
@@ -96,15 +89,10 @@ jobs:
             - name: Test .NET
               shell: bash
               run: |
-                  shopt -s nullglob
-                  tests=(**/*Tests.csproj **/*.Test.csproj)
-                  if [ ${#tests[@]} -eq 0 ]; then
-                    echo "No test projects found — skipping."
-                  else
                     dotnet test Transact.slnx --configuration Release --no-build \
                       --logger "trx;LogFileName=test-results.trx" \
                       --collect:"XPlat Code Coverage"
-                  fi
+        
 
             - name: Upload .NET test results
               if: always()
@@ -129,10 +117,5 @@ jobs:
               working-directory: Transact.Web
               shell: bash
               run: |
-                  if npm run | grep -qE '^\s*test'; then
-                    # Angular 21 uses Vitest (jsdom) — Karma's --browsers
-                    # and --watch flags are not supported.
                     CI=true npm test
-                  else
-                    echo "No test script — skipping."
-                  fi
+                

@@ -120,7 +120,7 @@ ci.yml --> infra.yml --> bootstrap.yml --> cd.yml (manual)
 
 - **Replace `sed` templating with Helm/Kustomize.** Per-app chart with `values-{dev,test,prod}.yaml` makes image tags, replicas, limits, and the Secrets Manager key typed inputs - and unlocks `helm diff` on PRs.
 - **Smoke test after rollout.** Today `cd.yml` only waits on `kubectl rollout status`; add a `/health/ready` + `POST /transactions` round-trip through the ALB with auto-rollback on failure.
-- **Sync CFN outputs to a ConfigMap** (small reconciler or `aws-cloudformation-stack-controller`) so the RDS endpoint isn't `sed`-substituted at deploy time.
+- **Monitoring & alerting.** CloudWatch Alarms on API 5xxs, RDS CPU, etc., with SNS notifications. In-cluster Prometheus + Grafana for app metrics and API latency.
 
 ---
 
@@ -211,54 +211,5 @@ The SPA detects its origin and switches `apiBaseUrl`:
 
 All secrets/config come from `.env`. `appsettings.json` has no connection string -
 it is provided via `ConnectionStrings__DefaultConnection`.
-
-</details>
-
-<details>
-<summary><strong>Run without Docker</strong></summary>
-
-Backend:
-
-```powershell
-cd Transact.Api
-dotnet run --launch-profile http
-```
-
-API on `http://localhost:5125` (Swagger at `/swagger`). HTTPS redirect is
-disabled in `Development` so the Angular dev server can call over plain HTTP.
-
-Frontend:
-
-```powershell
-cd Transact.Web
-npm install   # first time only
-npm start
-```
-
-SPA on http://localhost:4200; calls the API at `http://localhost:5125` via
-[`src/environments/environment.ts`](Transact.Web/src/environments/environment.ts).
-CORS for `4200` is enabled in [Program.cs](Transact.Api/Program.cs).
-
-</details>
-
-<details>
-<summary><strong>Build & migrations</strong></summary>
-
-```powershell
-# Backend
-dotnet build Transact.slnx
-
-# Frontend
-cd Transact.Web; npm run build
-```
-
-Add an EF Core migration (files under
-[Transact.Infrastructure/Persistence/Migrations](Transact.Infrastructure/Persistence/Migrations)):
-
-```powershell
-dotnet ef migrations add <Name> `
-  --project Transact.Infrastructure `
-  --startup-project Transact.Api
-```
 
 </details>
