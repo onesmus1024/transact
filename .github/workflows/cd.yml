@@ -1,4 +1,4 @@
-name: Deploy
+name: Deploy Application
 
 # Build images and deploy to the env mapped from the branch (or chosen via
 # workflow_dispatch input):
