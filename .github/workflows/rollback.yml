@@ -1,14 +1,18 @@
-name: Rollback
+﻿name: Rollback
 
-# Manual rollback. Re-deploys an existing image tag to the chosen environment.
-# Approval is enforced by the GitHub Environment (`dev` / `test` / `prod`).
+# Manual rollback. Re-points the EKS deployments at a previously-built image
+# tag for the chosen environment. No image is rebuilt - the tag must already
+# exist in ECR (it does if it came from a successful `Deploy` run).
 #
 # Usage:
 #   1. Actions -> Rollback -> Run workflow
 #   2. Pick the environment.
-#   3. Optionally pin a specific image tag (e.g. `prod-1a2b3c4d5e6f`).
-#      If left blank, the workflow picks the immediately previous successful
-#      build for that environment from this workflow's history.
+#   3. Optionally pin a specific build SHA (12-char short SHA, e.g.
+#      `1a2b3c4d5e6f`). If left blank, the workflow picks the second-most-
+#      recent successful `Deploy` run for that environment's branch (i.e.
+#      the build immediately before the bad one).
+#
+# Approval is enforced by the GitHub Environment (`dev` / `test` / `prod`).
 
 on:
     workflow_dispatch:
@@ -18,9 +22,9 @@ on:
                 required: true
                 type: choice
                 options: [ dev, test, prod ]
-            image_tag:
-                description: Image tag to redeploy (e.g. `prod-1a2b3c4d5e6f`). Leave blank to
-                    use the previous successful build.
+            build_sha:
+                description: 12-char short SHA of the build to redeploy (e.g. `1a2b3c4d5e6f`).
+                    Leave blank to use the previous successful Deploy run.
                 required: false
                 type: string
                 default: ""
@@ -28,11 +32,15 @@ on:
                 description: Why are you rolling back? (audit trail)
                 required: true
                 type: string
+            aws_region:
+                description: AWS region (must match the EKS cluster's region)
+                required: false
+                default: "us-east-1"
 
 env:
-    AWS_REGION: us-east-1
-    ECR_REPOSITORY_API: transact-api
-    ECR_REPOSITORY_WEB: transact-web
+    AWS_REGION: ${{ inputs.aws_region || 'us-east-1' }}
+    PROJECT_NAME: transact
+    RESOURCE_SUFFIX: "01"
 
 concurrency:
     # Serialize rollbacks per environment so two operators can't race.
@@ -40,12 +48,12 @@ concurrency:
     cancel-in-progress: false
 
 jobs:
-    # ---------------------------------------------------------------------------
-    # Resolve which image tag to redeploy.
-    # If the operator supplied one, use it. Otherwise look up the previous
-    # successful run of the CI/CD workflow that pushed an image for this env
-    # and reuse that tag.
-    # ---------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # 1. Resolve which build SHA to redeploy and compose the full image refs,
+    #    matching cd.yml's tag scheme:
+    #       repo: <project>-<env>-<region>-ecr-<suffix>
+    #       tags: api-<env>-<sha12>, web-<env>-<sha12>
+    # -------------------------------------------------------------------------
     resolve-tag:
         name: Resolve previous image tag
         runs-on: ubuntu-latest
@@ -53,145 +61,202 @@ jobs:
             actions: read
             contents: read
         outputs:
-            image_tag: ${{ steps.pick.outputs.image_tag }}
-            api_image: ${{ steps.pick.outputs.api_image }}
-            web_image: ${{ steps.pick.outputs.web_image }}
+            build_sha: ${{ steps.pick.outputs.build_sha }}
+            api_tag: ${{ steps.pick.outputs.api_tag }}
+            web_tag: ${{ steps.pick.outputs.web_tag }}
+            repo: ${{ steps.pick.outputs.repo }}
         steps:
-            - name: Pick tag
+            - name: Pick build SHA & compose image refs
               id: pick
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   TARGET_ENV: ${{ inputs.environment }}
-                  REQUESTED_TAG: ${{ inputs.image_tag }}
+                  REQUESTED_SHA: ${{ inputs.build_sha }}
               run: |
                   set -euo pipefail
 
-                  if [ -n "${REQUESTED_TAG}" ]; then
-                    TAG="${REQUESTED_TAG}"
-                    echo "Using operator-supplied tag: $TAG"
+                  if [ -n "${REQUESTED_SHA}" ]; then
+                    SHA="${REQUESTED_SHA}"
+                    echo "Using operator-supplied SHA: $SHA"
                   else
-                    echo "Looking up previous successful build for env=$TARGET_ENV..."
-                    # Find the most recent successful run of ci-cd.yml whose
-                    # docker job produced a tag for this environment, skipping
-                    # the very latest one (that's the bad deploy we're undoing).
-                    RUNS=$(gh run list \
-                      --workflow ci-cd.yml \
-                      --status success \
-                      --limit 25 \
-                      --json databaseId,headSha,headBranch \
-                      --jq '.[] | select(.headBranch == (
-                              if env.TARGET_ENV == "dev"  then "develop"
-                              elif env.TARGET_ENV == "test" then "test"
-                              else "main" end
-                            )) | .headSha')
+                    case "$TARGET_ENV" in
+                      dev)  BRANCHES=("develop") ;;
+                      test) BRANCHES=("test") ;;
+                      prod) BRANCHES=("main" "master") ;;
+                      *)    echo "::error::Unknown environment: $TARGET_ENV" ; exit 1 ;;
+                    esac
+
+                    echo "Looking up previous successful Deploy run for env=$TARGET_ENV (branches: ${BRANCHES[*]})..."
+                    SHAS=""
+                    for B in "${BRANCHES[@]}"; do
+                      SHAS+=$(gh run list \
+                        --workflow cd.yml \
+                        --status success \
+                        --branch "$B" \
+                        --limit 25 \
+                        --json headSha \
+                        --jq '.[].headSha')$'\n'
+                    done
 
                     # Skip the first (current) one and take the next.
-                    PREV_SHA=$(echo "$RUNS" | sed -n '2p')
-                    if [ -z "$PREV_SHA" ]; then
-                      # main may also be released from `master` — try once more.
-                      if [ "$TARGET_ENV" = "prod" ]; then
-                        RUNS=$(gh run list \
-                          --workflow ci-cd.yml --status success --limit 25 \
-                          --json headSha,headBranch \
-                          --jq '.[] | select(.headBranch == "master") | .headSha')
-                        PREV_SHA=$(echo "$RUNS" | sed -n '2p')
-                      fi
-                    fi
+                    PREV_SHA=$(printf '%s' "$SHAS" | awk 'NF' | sed -n '2p')
 
                     if [ -z "$PREV_SHA" ]; then
-                      echo "::error::Could not find a previous successful build for env=$TARGET_ENV. Pass image_tag explicitly."
+                      echo "::error::Could not find a previous successful Deploy for env=$TARGET_ENV. Pass build_sha explicitly."
                       exit 1
                     fi
 
-                    TAG="${TARGET_ENV}-${PREV_SHA:0:12}"
-                    echo "Resolved previous tag: $TAG"
+                    SHA="${PREV_SHA:0:12}"
+                    echo "Resolved previous SHA: $SHA"
                   fi
 
-                  echo "image_tag=$TAG"                                         >> "$GITHUB_OUTPUT"
-                  echo "api_image=${{ env.ECR_REPOSITORY_API }}:$TAG"           >> "$GITHUB_OUTPUT"
-                  echo "web_image=${{ env.ECR_REPOSITORY_WEB }}:$TAG"           >> "$GITHUB_OUTPUT"
+                  REPO="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-ecr-${RESOURCE_SUFFIX}"
+                  API_TAG="api-${TARGET_ENV}-${SHA}"
+                  WEB_TAG="web-${TARGET_ENV}-${SHA}"
 
-    # ---------------------------------------------------------------------------
-    # Verify the chosen tag actually exists in ECR before we redeploy.
-    # ---------------------------------------------------------------------------
+                  echo "build_sha=$SHA"   >> "$GITHUB_OUTPUT"
+                  echo "repo=$REPO"       >> "$GITHUB_OUTPUT"
+                  echo "api_tag=$API_TAG" >> "$GITHUB_OUTPUT"
+                  echo "web_tag=$WEB_TAG" >> "$GITHUB_OUTPUT"
+
+                  echo "Repo : $REPO"
+                  echo "API  : $API_TAG"
+                  echo "Web  : $WEB_TAG"
+
+    # -------------------------------------------------------------------------
+    # 2. Verify both image tags actually exist in ECR before we redeploy.
+    # -------------------------------------------------------------------------
     verify:
-        name: Verify image exists in ECR
+        name: Verify images exist in ECR
         needs: resolve-tag
         runs-on: ubuntu-latest
         permissions:
             id-token: write
             contents: read
         env:
-            AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-            IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
+            REPO: ${{ needs.resolve-tag.outputs.repo }}
+            API_TAG: ${{ needs.resolve-tag.outputs.api_tag }}
+            WEB_TAG: ${{ needs.resolve-tag.outputs.web_tag }}
         steps:
             - name: Configure AWS credentials
-              if: env.AWS_ROLE_TO_ASSUME != ''
               uses: aws-actions/configure-aws-credentials@v4
               with:
-                  role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
                   aws-region: ${{ env.AWS_REGION }}
 
             - name: Describe images
-              if: env.AWS_ROLE_TO_ASSUME != ''
               run: |
                   set -euo pipefail
-                  for repo in "${{ env.ECR_REPOSITORY_API }}" "${{ env.ECR_REPOSITORY_WEB }}"; do
-                    echo "Checking $repo:$IMAGE_TAG ..."
+                  for TAG in "$API_TAG" "$WEB_TAG"; do
+                    echo "Checking $REPO:$TAG ..."
                     aws ecr describe-images \
-                      --repository-name "$repo" \
-                      --image-ids imageTag="$IMAGE_TAG" >/dev/null
+                      --repository-name "$REPO" \
+                      --image-ids imageTag="$TAG" >/dev/null
                   done
                   echo "Both images present."
 
-            - name: Skip notice (no AWS creds configured)
-              if: env.AWS_ROLE_TO_ASSUME == ''
-              run: echo "::notice::AWS_ROLE_TO_ASSUME not set — skipping ECR existence check."
-
-    # ---------------------------------------------------------------------------
-    # Manual approval gate + actual rollback. The `environment:` binding makes
-    # GitHub block the job until the configured reviewers approve.
-    # ---------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # 3. Manual approval gate + actual rollback. The `environment:` binding
+    #    makes GitHub block the job until the configured reviewers approve.
+    # -------------------------------------------------------------------------
     rollback:
         name: Rollback ${{ inputs.environment }}
         needs: [ resolve-tag, verify ]
         runs-on: ubuntu-latest
         environment:
             name: ${{ inputs.environment }}
+        permissions:
+            contents: read
+            id-token: write # OIDC -> AWS
+        env:
+            TARGET_ENV: ${{ inputs.environment }}
+            REPO: ${{ needs.resolve-tag.outputs.repo }}
+            API_TAG: ${{ needs.resolve-tag.outputs.api_tag }}
+            WEB_TAG: ${{ needs.resolve-tag.outputs.web_tag }}
+            BUILD_SHA: ${{ needs.resolve-tag.outputs.build_sha }}
         steps:
             - name: Summary
               run: |
-                  echo "### Rollback summary"           >> "$GITHUB_STEP_SUMMARY"
-                  echo ""                               >> "$GITHUB_STEP_SUMMARY"
-                  echo "| Field | Value |"              >> "$GITHUB_STEP_SUMMARY"
-                  echo "|---|---|"                      >> "$GITHUB_STEP_SUMMARY"
-                  echo "| Environment | \`${{ inputs.environment }}\` |"          >> "$GITHUB_STEP_SUMMARY"
-                  echo "| Image tag   | \`${{ needs.resolve-tag.outputs.image_tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-                  echo "| Triggered by | @${{ github.actor }} |"                  >> "$GITHUB_STEP_SUMMARY"
-                  echo "| Reason | ${{ inputs.reason }} |"                        >> "$GITHUB_STEP_SUMMARY"
+                  {
+                    echo "### Rollback summary"
+                    echo ""
+                    echo "| Field | Value |"
+                    echo "|---|---|"
+                    echo "| Environment  | \`${TARGET_ENV}\` |"
+                    echo "| Build SHA    | \`${BUILD_SHA}\` |"
+                    echo "| API image    | \`${REPO}:${API_TAG}\` |"
+                    echo "| Web image    | \`${REPO}:${WEB_TAG}\` |"
+                    echo "| Triggered by | @${{ github.actor }} |"
+                    echo "| Reason       | ${{ inputs.reason }} |"
+                  } >> "$GITHUB_STEP_SUMMARY"
 
-            - name: Show what will be deployed
-              run: |
-                  echo "API image: ${{ needs.resolve-tag.outputs.api_image }}"
-                  echo "Web image: ${{ needs.resolve-tag.outputs.web_image }}"
+            - name: Configure AWS credentials
+              uses: aws-actions/configure-aws-credentials@v4
+              with:
+                  role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+                  aws-region: ${{ env.AWS_REGION }}
 
-            # Replace with your real deploy step (ECS update-service, kubectl set
-            # image, helm upgrade --set image.tag=..., etc.). Keep the command
-            # idempotent so re-running the rollback is safe.
-            - name: Deploy previous image
-              run: |
-                  echo "TODO — invoke deploy here, e.g.:"
-                  echo "aws ecs update-service \\"
-                  echo "  --cluster transact-${{ inputs.environment }} \\"
-                  echo "  --service transact-api \\"
-                  echo "  --force-new-deployment \\"
-                  echo "  --task-definition transact-api:${{ needs.resolve-tag.outputs.image_tag }}"
+            - name: Login to Amazon ECR
+              id: ecr-login
+              uses: aws-actions/amazon-ecr-login@v2
 
-            - name: Re-tag rolled-back image as <env>-latest
-              if: env.AWS_ROLE_TO_ASSUME != ''
-              env:
-                  AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-                  IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
+            - name: Resolve EKS cluster from CFN outputs
+              id: cfn
               run: |
-                  echo "TODO — optionally retag $IMAGE_TAG -> ${{ inputs.environment }}-latest in ECR"
-                  echo "so any consumers of the floating tag also see the rolled-back build."
+                  set -euo pipefail
+                  STACK_NAME="${PROJECT_NAME}-${TARGET_ENV}-${AWS_REGION}-core-${RESOURCE_SUFFIX}"
+                  CLUSTER=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+                    --query "Stacks[0].Outputs[?OutputKey=='EksClusterName'].OutputValue" --output text)
+                  if [ -z "$CLUSTER" ] || [ "$CLUSTER" = "None" ]; then
+                    echo "::error::EksClusterName output not found on stack $STACK_NAME" ; exit 1
+                  fi
+                  echo "cluster=$CLUSTER" >> "$GITHUB_OUTPUT"
+
+            - name: Install kubectl
+              uses: azure/setup-kubectl@v4
+              with:
+                  version: latest
+
+            - name: Update kubeconfig
+              run: |
+                  aws eks update-kubeconfig \
+                    --name "${{ steps.cfn.outputs.cluster }}" \
+                    --region "$AWS_REGION"
+
+            - name: Roll back deployments (kubectl set image)
+              run: |
+                  set -euo pipefail
+                  REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+                  API_IMAGE="${REGISTRY}/${REPO}:${API_TAG}"
+                  WEB_IMAGE="${REGISTRY}/${REPO}:${WEB_TAG}"
+
+                  echo "Rolling api -> $API_IMAGE"
+                  kubectl -n transact set image deployment/transact-api "api=${API_IMAGE}"
+
+                  echo "Rolling web -> $WEB_IMAGE"
+                  kubectl -n transact set image deployment/transact-web "web=${WEB_IMAGE}"
+
+            - name: Wait for rollout
+              run: |
+                  kubectl -n transact rollout status deployment/transact-api --timeout=5m
+                  kubectl -n transact rollout status deployment/transact-web --timeout=5m
+
+            - name: Re-tag rolled-back images as <env>-latest in ECR
+              run: |
+                  set -euo pipefail
+                  for COMPONENT in api web; do
+                    if [ "$COMPONENT" = "api" ]; then SRC="$API_TAG"; else SRC="$WEB_TAG"; fi
+                    DST="${COMPONENT}-${TARGET_ENV}-latest"
+                    echo "Re-tagging $REPO:$SRC -> $REPO:$DST"
+
+                    MANIFEST=$(aws ecr batch-get-image \
+                      --repository-name "$REPO" \
+                      --image-ids imageTag="$SRC" \
+                      --query 'images[0].imageManifest' --output text)
+
+                    aws ecr put-image \
+                      --repository-name "$REPO" \
+                      --image-tag "$DST" \
+                      --image-manifest "$MANIFEST" >/dev/null
+                  done
+                  echo "Floating <env>-latest tags updated."

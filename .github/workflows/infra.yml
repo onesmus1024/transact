@@ -1,23 +1,12 @@
 name: Deploy infrastructure
 
-# Deploys the nested CloudFormation stacks in aws/.
-# Flow:
-#   1. Resolve target environment from branch (or workflow_dispatch input).
-#   2. Sync aws/networking (and other domain folders) to S3 (required for nested TemplateURL).
-#   3. `aws cloudformation deploy` the root stack.
-#
-# Required GitHub secrets:
-#   AWS_ROLE_TO_ASSUME   - IAM role ARN for OIDC.
-# Optional GitHub variables (per environment or repo-wide):
-#   CFN_TEMPLATES_BUCKET - override the auto-generated bucket name.
-#   CFN_TEMPLATES_PREFIX - default "transact/cloudformation".
 
 on:
   # push:
-  # branches: [ main, master, test, develop ]
-  # paths:
-  #   - "aws/**"
-  #   - ".github/workflows/infra.yml"
+  #   branches: [ main, master, test, develop ]
+  #   paths:
+  #     - "aws/**"
+  #     - ".github/workflows/infra.yml"
   workflow_dispatch:
     inputs:
       environment:
